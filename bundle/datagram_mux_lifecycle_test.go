@@ -1,0 +1,203 @@
+package bundle
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/ohmycggk/nowhere-go/carrier"
+	"github.com/ohmycggk/nowhere-go/wire"
+)
+
+func TestQUICMuxDropsDataBeforeReadyAndReleasesOnClose(t *testing.T) {
+	session := newTestQUICSessionMux(t, 64, 4)
+	flow, err := session.register(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.deliver(1, []byte("before-ready"))
+	if got := len(flow.packets); got != 0 {
+		t.Fatalf("packets before READY = %d, want 0", got)
+	}
+	if got := session.budget.used; got != 0 {
+		t.Fatalf("budget before READY = %d, want 0", got)
+	}
+
+	if !flow.markReady() {
+		t.Fatal("failed to mark flow READY")
+	}
+	session.deliver(1, []byte("ready"))
+	if got := len(flow.packets); got != 1 {
+		t.Fatalf("packets after READY = %d, want 1", got)
+	}
+	if got := session.budget.used; got != len("ready") {
+		t.Fatalf("budget after enqueue = %d, want %d", got, len("ready"))
+	}
+	session.close(net.ErrClosed)
+	if got := session.budget.used; got != 0 {
+		t.Fatalf("budget after shutdown = %d, want 0", got)
+	}
+}
+
+func TestQUICMuxFragmentReservationReleasedOnShutdown(t *testing.T) {
+	session := newTestQUICSessionMux(t, 64, 4)
+	flow, err := session.register(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow.markReady()
+	session.handleFragment(1, wire.UDPFragment{
+		PacketID: 1, FragmentIndex: 0, FragmentCount: 2,
+		TotalLen: 10, Payload: []byte("12345"),
+	})
+	if got := session.budget.used; got != 10 {
+		t.Fatalf("fragment reservation = %d, want 10", got)
+	}
+	session.close(net.ErrClosed)
+	if got := session.budget.used; got != 0 {
+		t.Fatalf("fragment reservation after shutdown = %d, want 0", got)
+	}
+}
+
+func TestQUICMuxPendingCloseDeduplicatesAndInvalidatesAtLimit(t *testing.T) {
+	raw := &muxLifecycleSession{}
+	backend := &muxLifecycleBackend{}
+	reassembler, err := wire.NewDatagramReassembler(wire.DefaultReassemblyConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	muxBackend := &quicMuxBackend{
+		backend:  backend,
+		sessions: make(map[carrier.QuicSession]*quicSessionMux),
+	}
+	session := &quicSessionMux{
+		backend:          muxBackend,
+		raw:              raw,
+		ctx:              ctx,
+		cancel:           cancel,
+		authDone:         make(chan struct{}),
+		flows:            make(map[wire.FlowID]*quicDatagramFlow),
+		reassembler:      reassembler,
+		budget:           &quicByteBudget{limit: 64},
+		closeSet:         make(map[wire.FlowID]struct{}),
+		maxPendingCloses: 1,
+		invalidationDone: make(chan struct{}),
+		done:             make(chan struct{}),
+		loopDone:         make(chan struct{}),
+		sendQueue:        make(chan *quicSendRequest, 1),
+		closeReady:       make(chan struct{}, 1),
+		sendLoopDone:     make(chan struct{}),
+	}
+	muxBackend.sessions[raw] = session
+
+	if err := session.enqueueClose(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.enqueueClose(1); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(session.closeQueue); got != 1 {
+		t.Fatalf("deduplicated CLOSE queue length = %d, want 1", got)
+	}
+	if err := session.enqueueClose(2); !errors.Is(err, ErrPendingCloseLimit) {
+		t.Fatalf("overflow error = %v, want ErrPendingCloseLimit", err)
+	}
+	if got := backend.invalidations.Load(); got != 1 {
+		t.Fatalf("backend invalidations = %d, want 1", got)
+	}
+	select {
+	case <-session.done:
+	default:
+		t.Fatal("pending CLOSE overflow did not shut down session")
+	}
+}
+
+func TestQUICMuxConcurrentDuplicateRegistration(t *testing.T) {
+	session := newTestQUICSessionMux(t, 64, 4)
+	var successes atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := session.register(1); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("successful duplicate registrations = %d, want 1", got)
+	}
+	session.close(net.ErrClosed)
+}
+
+func newTestQUICSessionMux(t *testing.T, budget, closeLimit int) *quicSessionMux {
+	t.Helper()
+	raw := &muxLifecycleSession{receive: make(chan []byte)}
+	backend := &quicMuxBackend{
+		backend:          &muxLifecycleBackend{},
+		maxUDPQueueBytes: budget,
+		maxPendingCloses: closeLimit,
+		sessions:         make(map[carrier.QuicSession]*quicSessionMux),
+	}
+	session, err := newQUICSessionMux(backend, raw, wire.AuthFrame{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.sessions[raw] = session
+	t.Cleanup(func() {
+		session.close(net.ErrClosed)
+		<-session.sendLoopDone
+	})
+	return session
+}
+
+type muxLifecycleBackend struct {
+	invalidations atomic.Int32
+}
+
+func (*muxLifecycleBackend) AcquireSession(context.Context) (carrier.QuicSession, error) {
+	return nil, errors.New("unused")
+}
+func (b *muxLifecycleBackend) InvalidateSession(carrier.QuicSession) {
+	b.invalidations.Add(1)
+}
+func (*muxLifecycleBackend) Close() error { return nil }
+
+type muxLifecycleSession struct {
+	receive chan []byte
+}
+
+func (*muxLifecycleSession) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
+	return wire.TLSHandshakeInfo{TLSVersion: 0x0304, NegotiatedALPN: wire.DefaultALPN}, nil
+}
+func (*muxLifecycleSession) PrepareStream(context.Context) (carrier.QuicPreparedStream, error) {
+	return nil, errors.New("unused")
+}
+func (s *muxLifecycleSession) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	if s.receive == nil {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	select {
+	case data := <-s.receive:
+		return data, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func (*muxLifecycleSession) CurrentMaxDatagramSize() int { return 1200 }
+func (*muxLifecycleSession) SendDatagram(ctx context.Context, _ []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+func (*muxLifecycleSession) LocalAddr() net.Addr { return &net.UDPAddr{} }
