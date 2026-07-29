@@ -1,0 +1,119 @@
+{
+  "protocol": "nowhere-v1",
+  "source": {
+    "rust": "Nowhere/src/tests/protocol/flow.rs::fixed_vectors_pack_flags_and_network_order_id"
+  },
+  "cases": [
+    {
+      "id": "attach-udp-tcp-quic",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "attach",
+      "flow_id": "7",
+      "kind": "udp",
+      "uplink": "tls_tcp",
+      "downlink": "quic",
+      "frame_hex": "1600000007"
+    },
+    {
+      "id": "duplex-carrier-mismatch",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "1000000001",
+      "error_code": "duplex_carrier_mismatch"
+    },
+    {
+      "id": "duplex-tcp-tls-tls",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "duplex",
+      "flow_id": "16909060",
+      "kind": "tcp",
+      "uplink": "tls_tcp",
+      "downlink": "tls_tcp",
+      "frame_hex": "0001020304"
+    },
+    {
+      "id": "duplex-udp-quic-quic",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "duplex",
+      "flow_id": "16909060",
+      "kind": "udp",
+      "uplink": "quic",
+      "downlink": "quic",
+      "frame_hex": "1c01020304"
+    },
+    {
+      "id": "invalid-role",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "0300000001",
+      "error_code": "invalid_role"
+    },
+    {
+      "id": "max-flow-id",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "duplex",
+      "flow_id": "4294967295",
+      "kind": "tcp",
+      "uplink": "quic",
+      "downlink": "quic",
+      "frame_hex": "18ffffffff"
+    },
+    {
+      "id": "open-split-carrier-match",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "0100000001",
+      "error_code": "split_carrier_match"
+    },
+    {
+      "id": "open-udp-quic-tcp",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "open",
+      "flow_id": "287454020",
+      "kind": "udp",
+      "uplink": "quic",
+      "downlink": "tls_tcp",
+      "frame_hex": "0d11223344"
+    },
+    {
+      "id": "reserved-bit",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "2000000001",
+      "error_code": "reserved_bits"
+    },
+    {
+      "id": "short-4",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "00000000",
+      "error_code": "invalid_length"
+    },
+    {
+      "id": "short-6",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "000000000000",
+      "error_code": "invalid_length"
+    },
+    {
+      "id": "short-empty",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "",
+      "error_code": "invalid_length"
+    },
+    {
+      "id": "zero-flow-id",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "0000000000",
+      "error_code": "zero_flow_id"
+    }
+  ]
+}
