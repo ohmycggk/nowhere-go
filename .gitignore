@@ -1,0 +1,29 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+/nowhere-check
+
+# Coverage / profiling
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Go workspace / vendor (optional local)
+/vendor/
+go.work
+go.work.sum
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Local env
+.env
+.env.*
