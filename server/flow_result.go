@@ -50,16 +50,22 @@ func (r *flowReadiness) Ready() error {
 				r.err = ErrDraining
 			}
 		} else if r.ready != nil {
+			// Arm local consumers (e.g. paired UDP datagram delivery via
+			// setOnReady) before committing the peer-visible READY byte: a
+			// client may answer the byte within one RTT, faster than this
+			// goroutine resumes after the write returns.
+			r.mu.Lock()
+			onReady := r.onReady
+			r.mu.Unlock()
+			if onReady != nil {
+				onReady()
+			}
 			r.err = r.ready()
 		}
 		r.mu.Lock()
 		r.resolved = true
 		r.readyResolved = r.err == nil
-		onReady := r.onReady
 		r.mu.Unlock()
-		if r.err == nil && onReady != nil {
-			onReady()
-		}
 		close(r.done)
 	})
 	<-r.done

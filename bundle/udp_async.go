@@ -83,6 +83,12 @@ func (d *deadlineWatch) expired() bool {
 	return !d.t.IsZero() && time.Now().After(d.t)
 }
 
+func (d *deadlineWatch) get() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.t
+}
+
 func (c *asyncUDPConn) runSetup(ctx context.Context) {
 	pc, err := c.bundle.OpenUDP(ctx, c.target)
 	c.mu.Lock()
@@ -101,6 +107,16 @@ func (c *asyncUDPConn) runSetup(ctx context.Context) {
 	}
 	c.inner = pc
 	c.mu.Unlock()
+
+	// Deadlines set while setup was in flight never reached pc (inner was
+	// nil); propagate them now so blocked ReadFrom/WriteTo callers can time
+	// out as their callers intended.
+	if t := c.rd.get(); !t.IsZero() {
+		_ = pc.SetReadDeadline(t)
+	}
+	if t := c.wd.get(); !t.IsZero() {
+		_ = pc.SetWriteDeadline(t)
+	}
 	close(c.ready)
 
 	// Drain queued first packets onto the live flow.
