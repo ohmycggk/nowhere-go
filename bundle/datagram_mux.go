@@ -190,8 +190,11 @@ func (b *quicMuxBackend) AcquireSession(ctx context.Context) (carrier.QuicSessio
 			b.backend.InvalidateSession(raw)
 			return nil, err
 		}
+		// Publish before starting receiveLoop so an immediate raw-session death
+		// can remove this entry (stream-only TCP-over-QUIC never registers UDP).
 		b.sessions[raw] = session
 		b.mu.Unlock()
+		session.startReceiveLoop()
 		return session, nil
 	}
 }
@@ -336,6 +339,22 @@ func newQUICSessionMux(backend *quicMuxBackend, raw carrier.QuicSession, authFra
 	session.prober = carrierquic.NewDatagramProber(raw.CurrentMaxDatagramSize)
 	go session.sendLoop()
 	return session, nil
+}
+
+// startReceiveLoop watches the raw session for terminal datagram errors so the
+// mux can tear down even when no UDP flow was ever registered (TCP-over-QUIC).
+// Without this, an idle/peer close leaves sendLoop blocked and the sessions map
+// entry orphaned after the host replaces the physical session.
+func (s *quicSessionMux) startReceiveLoop() {
+	if s == nil {
+		return
+	}
+	s.startOnce.Do(func() {
+		s.mu.Lock()
+		s.started = true
+		s.mu.Unlock()
+		go s.receiveLoop()
+	})
 }
 
 func (s *quicSessionMux) PrepareStream(ctx context.Context) (carrier.QuicPreparedStream, error) {
@@ -744,11 +763,8 @@ func (s *quicSessionMux) register(flowID wire.FlowID) (*quicDatagramFlow, error)
 		return nil, errors.New("nowhere: duplicate quic udp flow")
 	}
 	s.flows[flowID] = flow
-	s.startOnce.Do(func() {
-		s.started = true
-		go s.receiveLoop()
-	})
 	s.mu.Unlock()
+	s.startReceiveLoop()
 	return flow, nil
 }
 

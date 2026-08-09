@@ -7,10 +7,57 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ohmycggk/nowhere-go/carrier"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
+
+func TestQUICMuxReleasesOnRawCloseWithoutUDPFlow(t *testing.T) {
+	// TCP-over-QUIC never calls register(), so receiveLoop must start at
+	// AcquireSession time; otherwise idle/peer close orphans sendLoop + map entry.
+	raw := &muxLifecycleSession{receive: make(chan []byte), fail: make(chan struct{})}
+	backend := &muxLifecycleBackend{}
+	muxBackend := &quicMuxBackend{
+		backend:          backend,
+		auth:             func(context.Context, carrier.QuicSession) (wire.AuthFrame, error) { return wire.AuthFrame{1}, nil },
+		maxUDPQueueBytes: 64,
+		maxPendingCloses: 4,
+		sessions:         make(map[carrier.QuicSession]*quicSessionMux),
+	}
+	backend.acquire = func(context.Context) (carrier.QuicSession, error) { return raw, nil }
+
+	session, err := muxBackend.AcquireSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, ok := session.(*quicSessionMux)
+	if !ok {
+		t.Fatalf("session type %T, want *quicSessionMux", session)
+	}
+	if got := len(muxBackend.sessions); got != 1 {
+		t.Fatalf("sessions after acquire = %d, want 1", got)
+	}
+
+	close(raw.fail)
+
+	select {
+	case <-mux.sendLoopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sendLoop did not exit after raw session death without UDP flow")
+	}
+	select {
+	case <-mux.loopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiveLoop did not exit after raw session death without UDP flow")
+	}
+	if got := len(muxBackend.sessions); got != 0 {
+		t.Fatalf("sessions after raw close = %d, want 0", got)
+	}
+	if got := backend.invalidations.Load(); got != 1 {
+		t.Fatalf("backend invalidations = %d, want 1", got)
+	}
+}
 
 func TestQUICMuxDropsDataBeforeReadyAndReleasesOnClose(t *testing.T) {
 	session := newTestQUICSessionMux(t, 64, 4)
@@ -159,9 +206,13 @@ func newTestQUICSessionMux(t *testing.T, budget, closeLimit int) *quicSessionMux
 
 type muxLifecycleBackend struct {
 	invalidations atomic.Int32
+	acquire       func(context.Context) (carrier.QuicSession, error)
 }
 
-func (*muxLifecycleBackend) AcquireSession(context.Context) (carrier.QuicSession, error) {
+func (b *muxLifecycleBackend) AcquireSession(ctx context.Context) (carrier.QuicSession, error) {
+	if b.acquire != nil {
+		return b.acquire(ctx)
+	}
 	return nil, errors.New("unused")
 }
 func (b *muxLifecycleBackend) InvalidateSession(carrier.QuicSession) {
@@ -171,6 +222,7 @@ func (*muxLifecycleBackend) Close() error { return nil }
 
 type muxLifecycleSession struct {
 	receive chan []byte
+	fail    chan struct{}
 }
 
 func (*muxLifecycleSession) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
@@ -180,13 +232,30 @@ func (*muxLifecycleSession) PrepareStream(context.Context) (carrier.QuicPrepared
 	return nil, errors.New("unused")
 }
 func (s *muxLifecycleSession) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	if s.fail != nil {
+		select {
+		case <-s.fail:
+			return nil, net.ErrClosed
+		default:
+		}
+	}
 	if s.receive == nil {
+		if s.fail != nil {
+			select {
+			case <-s.fail:
+				return nil, net.ErrClosed
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 	select {
 	case data := <-s.receive:
 		return data, nil
+	case <-s.fail:
+		return nil, net.ErrClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
