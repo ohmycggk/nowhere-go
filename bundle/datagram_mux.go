@@ -154,6 +154,7 @@ func (b *quicMuxBackend) AcquireSession(ctx context.Context) (carrier.QuicSessio
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
+			b.backend.InvalidateSession(raw)
 			return nil, net.ErrClosed
 		}
 		if session := b.sessions[raw]; session != nil {

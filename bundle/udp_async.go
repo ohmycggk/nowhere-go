@@ -120,6 +120,13 @@ func (c *asyncUDPConn) runSetup(ctx context.Context) {
 	close(c.ready)
 
 	// Drain queued first packets onto the live flow.
+	c.drainSetupQueue(pc)
+}
+
+// drainSetupQueue writes buffered first packets onto the live flow. A write
+// failure is terminal for the async conn: record setupErr and close the inner
+// PacketConn so the QUIC/UDP flow cannot linger until bundle shutdown.
+func (c *asyncUDPConn) drainSetupQueue(pc net.PacketConn) {
 	for {
 		select {
 		case <-c.closed:
@@ -129,6 +136,15 @@ func (c *asyncUDPConn) runSetup(ctx context.Context) {
 				return
 			}
 			if _, werr := pc.WriteTo(pkt.payload, pkt.addr); werr != nil {
+				c.mu.Lock()
+				if !c.closedFlag {
+					c.setupErr = werr
+					c.inner = nil
+					c.mu.Unlock()
+					_ = pc.Close()
+				} else {
+					c.mu.Unlock()
+				}
 				return
 			}
 		default:

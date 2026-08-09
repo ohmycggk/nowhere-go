@@ -59,6 +59,32 @@ func TestQUICMuxReleasesOnRawCloseWithoutUDPFlow(t *testing.T) {
 	}
 }
 
+func TestQUICMuxAcquireAfterCloseInvalidatesRaw(t *testing.T) {
+	raw := &muxLifecycleSession{receive: make(chan []byte)}
+	backend := &muxLifecycleBackend{}
+	muxBackend := &quicMuxBackend{
+		backend:          backend,
+		auth:             func(context.Context, carrier.QuicSession) (wire.AuthFrame, error) { return wire.AuthFrame{1}, nil },
+		maxUDPQueueBytes: 64,
+		maxPendingCloses: 4,
+		sessions:         make(map[carrier.QuicSession]*quicSessionMux),
+	}
+	backend.acquire = func(context.Context) (carrier.QuicSession, error) { return raw, nil }
+
+	if err := muxBackend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := muxBackend.AcquireSession(context.Background()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("AcquireSession after Close = %v, want net.ErrClosed", err)
+	}
+	if got := backend.invalidations.Load(); got != 1 {
+		t.Fatalf("backend invalidations = %d, want 1", got)
+	}
+	if got := len(muxBackend.sessions); got != 0 {
+		t.Fatalf("sessions after closed acquire = %d, want 0", got)
+	}
+}
+
 func TestQUICMuxDropsDataBeforeReadyAndReleasesOnClose(t *testing.T) {
 	session := newTestQUICSessionMux(t, 64, 4)
 	flow, err := session.register(1)

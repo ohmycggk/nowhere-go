@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,20 +67,49 @@ func TestAsyncUDPConnQueuesFirstPacket(t *testing.T) {
 	c.inner = inner
 	c.mu.Unlock()
 	close(c.ready)
-	// Drain like runSetup.
-	for {
-		select {
-		case pkt := <-c.queue:
-			_, _ = inner.WriteTo(pkt.payload, pkt.addr)
-		default:
-			goto drained
-		}
-	}
-drained:
+	c.drainSetupQueue(inner)
 	inner.mu.Lock()
 	defer inner.mu.Unlock()
 	if len(inner.writes) != 1 || string(inner.writes[0]) != "first" {
 		t.Fatalf("drained writes = %v", inner.writes)
+	}
+	_ = c.Close()
+}
+
+func TestAsyncUDPConnDrainWriteFailureClosesInner(t *testing.T) {
+	writeErr := errors.New("write failed")
+	inner := &recordingPacketConn{writeErr: writeErr}
+	c := &asyncUDPConn{
+		cancel: func() {},
+		queue:  make(chan queuedUDPPacket, DefaultUDPSetupQueuePackets),
+		ready:  make(chan struct{}),
+		closed: make(chan struct{}),
+	}
+	if _, err := c.WriteTo([]byte("first"), &net.UDPAddr{}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.inner = inner
+	c.mu.Unlock()
+	close(c.ready)
+
+	c.drainSetupQueue(inner)
+
+	c.mu.Lock()
+	setupErr := c.setupErr
+	innerConn := c.inner
+	c.mu.Unlock()
+	if !errors.Is(setupErr, writeErr) {
+		t.Fatalf("setupErr = %v, want %v", setupErr, writeErr)
+	}
+	if innerConn != nil {
+		t.Fatal("inner should be cleared after drain write failure")
+	}
+	if got := inner.closeCount.Load(); got != 1 {
+		t.Fatalf("inner Close calls = %d, want 1", got)
+	}
+	if _, err := c.WriteTo([]byte("late"), &net.UDPAddr{}); !errors.Is(err, writeErr) {
+		t.Fatalf("WriteTo after drain failure = %v, want %v", err, writeErr)
 	}
 	_ = c.Close()
 }
@@ -100,18 +130,26 @@ func (*blockingQUICBackend) InvalidateSession(carrier.QuicSession) {}
 func (*blockingQUICBackend) Close() error                          { return nil }
 
 type recordingPacketConn struct {
-	mu     sync.Mutex
-	writes [][]byte
+	mu         sync.Mutex
+	writes     [][]byte
+	writeErr   error
+	closeCount atomic.Int32
 }
 
 func (c *recordingPacketConn) ReadFrom([]byte) (int, net.Addr, error) { return 0, nil, net.ErrClosed }
 func (c *recordingPacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
 	c.writes = append(c.writes, append([]byte(nil), p...))
 	return len(p), nil
 }
-func (*recordingPacketConn) Close() error                     { return nil }
+func (c *recordingPacketConn) Close() error {
+	c.closeCount.Add(1)
+	return nil
+}
 func (*recordingPacketConn) LocalAddr() net.Addr              { return &net.UDPAddr{} }
 func (*recordingPacketConn) SetDeadline(time.Time) error      { return nil }
 func (*recordingPacketConn) SetReadDeadline(time.Time) error  { return nil }
