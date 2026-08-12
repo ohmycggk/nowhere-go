@@ -5,7 +5,7 @@ import "github.com/ohmycggk/nowhere-go/wire"
 // Convenience re-exports; prefer importing wire directly in new code.
 
 const (
-	// DefaultALPN is the single ALPN every Nowhere 1.5 carrier negotiates.
+	// DefaultALPN is the single ALPN every Nowhere 1.5+ carrier negotiates.
 	DefaultALPN = wire.DefaultALPN
 	// SessionIDLen is the fixed length of a logical session identifier.
 	SessionIDLen = wire.SessionIDLen

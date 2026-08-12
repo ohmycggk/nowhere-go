@@ -12,15 +12,29 @@ const initialTCPPayloadCoalesceLimit = 64 * 1024
 
 // OpenTCP opens a TCP logical flow using the configured carrier matrix.
 func (b *CarrierBundle) OpenTCP(ctx context.Context, target wire.Target) (net.Conn, error) {
-	return b.OpenTCPWithPayload(ctx, target, nil)
+	return b.openTCP(ctx, target, nil, 0)
+}
+
+// OpenTCPWithHops opens a TCP logical flow with an explicit remaining native
+// Portal forwarding budget. Vector-originated callers should use OpenTCP,
+// which always writes HOPS zero.
+func (b *CarrierBundle) OpenTCPWithHops(ctx context.Context, target wire.Target, hops uint8) (net.Conn, error) {
+	return b.openTCP(ctx, target, nil, hops)
 }
 
 // OpenTCPWithPayload opens a TCP logical flow and synchronously writes payload.
 // Up to 64 KiB is coalesced into the opening envelope; any remainder is written
 // only after the peer returns READY. The caller retains ownership of payload.
 func (b *CarrierBundle) OpenTCPWithPayload(ctx context.Context, target wire.Target, payload []byte) (net.Conn, error) {
+	return b.openTCP(ctx, target, payload, 0)
+}
+
+func (b *CarrierBundle) openTCP(ctx context.Context, target wire.Target, payload []byte, hops uint8) (net.Conn, error) {
 	if err := target.Validate(); err != nil {
 		return nil, err
+	}
+	if hops > wire.MaxPortalHops {
+		return nil, errors.New("nowhere: portal hop budget exceeds 7")
 	}
 	prefixLen := len(payload)
 	if prefixLen > initialTCPPayloadCoalesceLimit {
@@ -33,13 +47,13 @@ func (b *CarrierBundle) OpenTCPWithPayload(ctx context.Context, target wire.Targ
 		err  error
 	)
 	if b.cfg.up != b.cfg.down {
-		conn, err = b.openAsymmetricTCP(ctx, target, prefix)
+		conn, err = b.openAsymmetricTCP(ctx, target, prefix, hops)
 	} else {
 		switch b.cfg.up {
 		case wire.CarrierTLSTCP:
-			conn, err = b.openSymmetricTCPTCP(ctx, target, prefix)
+			conn, err = b.openSymmetricTCPTCP(ctx, target, prefix, hops)
 		case wire.CarrierQUIC:
-			conn, err = b.openSymmetricUDPQUIC(ctx, target, prefix)
+			conn, err = b.openSymmetricUDPQUIC(ctx, target, prefix, hops)
 		default:
 			return nil, errors.New("nowhere: invalid carrier")
 		}
@@ -58,24 +72,38 @@ func (b *CarrierBundle) OpenTCPWithPayload(ctx context.Context, target wire.Targ
 
 // OpenUDP opens a UDP logical flow using the configured carrier matrix.
 func (b *CarrierBundle) OpenUDP(ctx context.Context, target wire.Target) (net.PacketConn, error) {
+	return b.openUDP(ctx, target, 0)
+}
+
+// OpenUDPWithHops opens a UDP logical flow with an explicit remaining native
+// Portal forwarding budget. Vector-originated callers should use OpenUDP,
+// which always writes HOPS zero.
+func (b *CarrierBundle) OpenUDPWithHops(ctx context.Context, target wire.Target, hops uint8) (net.PacketConn, error) {
+	return b.openUDP(ctx, target, hops)
+}
+
+func (b *CarrierBundle) openUDP(ctx context.Context, target wire.Target, hops uint8) (net.PacketConn, error) {
 	if err := target.Validate(); err != nil {
 		return nil, err
 	}
+	if hops > wire.MaxPortalHops {
+		return nil, errors.New("nowhere: portal hop budget exceeds 7")
+	}
 	if b.cfg.up != b.cfg.down {
-		return b.openAsymmetricUDP(ctx, target)
+		return b.openAsymmetricUDP(ctx, target, hops)
 	}
 	switch b.cfg.up {
 	case wire.CarrierTLSTCP:
-		return b.openSymmetricTCPUDP(ctx, target)
+		return b.openSymmetricTCPUDP(ctx, target, hops)
 	case wire.CarrierQUIC:
-		return b.openSymmetricUDPQUICUDP(ctx, target)
+		return b.openSymmetricUDPQUICUDP(ctx, target, hops)
 	default:
 		return nil, errors.New("nowhere: invalid carrier")
 	}
 }
 
-func (b *CarrierBundle) openSymmetricTCPTCP(ctx context.Context, target wire.Target, payloadPrefix []byte) (net.Conn, error) {
-	setup, err := b.newDuplexSetup(wire.FlowKindTCP, target)
+func (b *CarrierBundle) openSymmetricTCPTCP(ctx context.Context, target wire.Target, payloadPrefix []byte, hops uint8) (net.Conn, error) {
+	setup, err := b.newDuplexSetup(wire.FlowKindTCP, target, hops)
 	if err != nil {
 		return nil, err
 	}
@@ -86,16 +114,16 @@ func (b *CarrierBundle) openSymmetricTCPTCP(ctx context.Context, target wire.Tar
 	return commitTCPFlow(half, payloadPrefix)
 }
 
-func (b *CarrierBundle) openSymmetricUDPQUIC(ctx context.Context, target wire.Target, payloadPrefix []byte) (net.Conn, error) {
-	setup, err := b.newDuplexSetup(wire.FlowKindTCP, target)
+func (b *CarrierBundle) openSymmetricUDPQUIC(ctx context.Context, target wire.Target, payloadPrefix []byte, hops uint8) (net.Conn, error) {
+	setup, err := b.newDuplexSetup(wire.FlowKindTCP, target, hops)
 	if err != nil {
 		return nil, err
 	}
 	return b.openQUICDuplexStream(ctx, setup, payloadPrefix)
 }
 
-func (b *CarrierBundle) openSymmetricTCPUDP(ctx context.Context, target wire.Target) (net.PacketConn, error) {
-	setup, err := b.newDuplexSetup(wire.FlowKindUDP, target)
+func (b *CarrierBundle) openSymmetricTCPUDP(ctx context.Context, target wire.Target, hops uint8) (net.PacketConn, error) {
+	setup, err := b.newDuplexSetup(wire.FlowKindUDP, target, hops)
 	if err != nil {
 		return nil, err
 	}
@@ -114,8 +142,8 @@ func (b *CarrierBundle) openSymmetricTCPUDP(ctx context.Context, target wire.Tar
 	return newUOTPacketConn(conn, targetToAddr(target)), nil
 }
 
-func (b *CarrierBundle) openSymmetricUDPQUICUDP(ctx context.Context, target wire.Target) (net.PacketConn, error) {
-	setup, err := b.newDuplexSetup(wire.FlowKindUDP, target)
+func (b *CarrierBundle) openSymmetricUDPQUICUDP(ctx context.Context, target wire.Target, hops uint8) (net.PacketConn, error) {
+	setup, err := b.newDuplexSetup(wire.FlowKindUDP, target, hops)
 	if err != nil {
 		return nil, err
 	}

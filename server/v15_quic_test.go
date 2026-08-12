@@ -117,7 +117,10 @@ func TestServeQUICRoutesFirstFlowCoalescedWithAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstream := &v15SignalingUpstream{routed: make(chan wire.Target, 1)}
+	upstream := &v15SignalingUpstream{
+		routed: make(chan wire.Target, 1),
+		infos:  make(chan FlowInfo, 1),
+	}
 	handler, err := NewHandler(HandlerOptions{Config: config, Upstream: upstream})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +139,7 @@ func TestServeQUICRoutesFirstFlowCoalescedWithAuthentication(t *testing.T) {
 	}
 	header, err := wire.WriteFlowHeader(wire.FlowHeader{
 		Role: wire.FlowRoleDuplex, FlowID: 1, Kind: wire.FlowKindTCP,
-		Uplink: wire.CarrierQUIC, Downlink: wire.CarrierQUIC,
+		Uplink: wire.CarrierQUIC, Downlink: wire.CarrierQUIC, Hops: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +166,14 @@ func TestServeQUICRoutesFirstFlowCoalescedWithAuthentication(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("coalesced first flow was not routed")
 	}
+	select {
+	case info := <-upstream.infos:
+		if info.Hops != 5 {
+			t.Fatalf("routed HOPS=%d want=5", info.Hops)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("flow metadata was not exposed to Upstream")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -185,11 +196,16 @@ func (v15DiscardUpstream) HandlePacket(context.Context, net.PacketConn, net.Addr
 
 type v15SignalingUpstream struct {
 	routed chan wire.Target
+	infos  chan FlowInfo
 }
 
-func (u *v15SignalingUpstream) HandleStream(_ context.Context, _ net.Conn, _ net.Addr, target wire.Target, readiness FlowReadiness) error {
+func (u *v15SignalingUpstream) HandleStream(ctx context.Context, _ net.Conn, _ net.Addr, target wire.Target, readiness FlowReadiness) error {
 	if err := readiness.Ready(); err != nil {
 		return err
+	}
+	if u.infos != nil {
+		info, _ := FlowInfoFromContext(ctx)
+		u.infos <- info
 	}
 	u.routed <- target
 	return nil

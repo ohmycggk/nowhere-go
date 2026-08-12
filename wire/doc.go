@@ -1,8 +1,8 @@
-// Package wire implements the Nowhere 1.5 wire format.
+// Package wire implements the Nowhere 1.7 wire format.
 //
 // The codec mirrors the Rust oracle in Nowhere/src/protocol one-to-one:
 //   - 32-byte connection-bound authentication frame
-//   - 5-byte flow header (flags + big-endian uint32 flow id)
+//   - 5-byte flow header (flags with HOPS + big-endian uint32 flow id)
 //   - SOCKS5-style typed target address
 //   - single-byte setup result
 //   - u16-length UoT packet framing
@@ -12,7 +12,7 @@
 // dependencies; HKDF is implemented over the standard library.
 package wire
 
-// DefaultALPN is the single ALPN every Nowhere 1.5 carrier negotiates.
+// DefaultALPN is the single ALPN every Nowhere 1.5+ carrier negotiates.
 const DefaultALPN = "now/1"
 
 // SessionIDLen is the fixed length of a logical session identifier.

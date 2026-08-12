@@ -9,15 +9,15 @@ import (
 
 // AuthCase is one 1.5 connection-bound authentication vector.
 type AuthCase struct {
-	ID          string `json:"id"`
-	SharedKey   string `json:"shared_key"`
-	Transport   string `json:"transport"`
-	ExporterHex string `json:"exporter_hex"`
+	ID           string `json:"id"`
+	SharedKey    string `json:"shared_key"`
+	Transport    string `json:"transport"`
+	ExporterHex  string `json:"exporter_hex"`
 	SessionIDHex string `json:"session_id_hex"`
-	AuthKeyHex  string `json:"auth_key_hex"`
-	TagHex      string `json:"tag_hex"`
-	FrameHex    string `json:"frame_hex"`
-	FrameLen    int    `json:"frame_len"`
+	AuthKeyHex   string `json:"auth_key_hex"`
+	TagHex       string `json:"tag_hex"`
+	FrameHex     string `json:"frame_hex"`
+	FrameLen     int    `json:"frame_len"`
 }
 
 // AuthFile is the harness auth.json corpus.
@@ -46,23 +46,24 @@ type TargetRejectCase struct {
 
 // TargetFile is the harness target.json corpus.
 type TargetFile struct {
-	Protocol string               `json:"protocol"`
-	Accept   []TargetAcceptCase   `json:"accept"`
-	Reject   []TargetRejectCase   `json:"reject"`
+	Protocol string             `json:"protocol"`
+	Accept   []TargetAcceptCase `json:"accept"`
+	Reject   []TargetRejectCase `json:"reject"`
 }
 
-// FlowCase is one flow-header vector (1.5: valid+invalid, no result cases).
+// FlowCase is one flow-header vector.
 type FlowCase struct {
-	ID         string `json:"id"`
-	Operation  string `json:"operation"`
-	Valid      bool   `json:"valid"`
-	Role       string `json:"role,omitempty"`
-	FlowID     string `json:"flow_id,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Uplink     string `json:"uplink,omitempty"`
-	Downlink   string `json:"downlink,omitempty"`
-	FrameHex   string `json:"frame_hex"`
-	ErrorCode  string `json:"error_code,omitempty"`
+	ID        string `json:"id"`
+	Operation string `json:"operation"`
+	Valid     bool   `json:"valid"`
+	Role      string `json:"role,omitempty"`
+	FlowID    string `json:"flow_id,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Uplink    string `json:"uplink,omitempty"`
+	Downlink  string `json:"downlink,omitempty"`
+	Hops      uint8  `json:"hops,omitempty"`
+	FrameHex  string `json:"frame_hex"`
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // FlowFile is the harness flow.json corpus.
@@ -109,13 +110,13 @@ type UOTFile struct {
 
 // ResultCase is one setup-result / flow-result vector.
 type ResultCase struct {
-	ID           string `json:"id"`
-	Operation    string `json:"operation"`
-	Valid        bool   `json:"valid"`
-	SetupResult  string `json:"setup_result"`
-	Code         uint8  `json:"code"`
-	FrameHex     string `json:"frame_hex"`
-	ErrorCode    string `json:"error_code,omitempty"`
+	ID          string `json:"id"`
+	Operation   string `json:"operation"`
+	Valid       bool   `json:"valid"`
+	SetupResult string `json:"setup_result"`
+	Code        uint8  `json:"code"`
+	FrameHex    string `json:"frame_hex"`
+	ErrorCode   string `json:"error_code,omitempty"`
 }
 
 // ResultFile is the harness result.json corpus.

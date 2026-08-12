@@ -1,7 +1,7 @@
 {
   "protocol": "nowhere-v1",
   "source": {
-    "rust": "Nowhere/src/tests/protocol/flow.rs::fixed_vectors_pack_flags_and_network_order_id"
+    "rust": "Nowhere/src/tests/protocol/flow.rs"
   },
   "cases": [
     {
@@ -63,6 +63,42 @@
       "frame_hex": "18ffffffff"
     },
     {
+      "id": "max-hops-duplex-tcp-tls-tls",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "duplex",
+      "flow_id": "42",
+      "kind": "tcp",
+      "uplink": "tls_tcp",
+      "downlink": "tls_tcp",
+      "hops": 7,
+      "frame_hex": "e00000002a"
+    },
+    {
+      "id": "hops-3-open-udp-tls-quic",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "open",
+      "flow_id": "4294967295",
+      "kind": "udp",
+      "uplink": "tls_tcp",
+      "downlink": "quic",
+      "hops": 3,
+      "frame_hex": "75ffffffff"
+    },
+    {
+      "id": "hops-6-attach-udp-quic-tls",
+      "operation": "flow_header",
+      "valid": true,
+      "role": "attach",
+      "flow_id": "2",
+      "kind": "udp",
+      "uplink": "quic",
+      "downlink": "tls_tcp",
+      "hops": 6,
+      "frame_hex": "ce00000002"
+    },
+    {
       "id": "open-split-carrier-match",
       "operation": "flow_header",
       "valid": false,
@@ -79,13 +115,6 @@
       "uplink": "quic",
       "downlink": "tls_tcp",
       "frame_hex": "0d11223344"
-    },
-    {
-      "id": "reserved-bit",
-      "operation": "flow_header",
-      "valid": false,
-      "frame_hex": "2000000001",
-      "error_code": "reserved_bits"
     },
     {
       "id": "short-4",

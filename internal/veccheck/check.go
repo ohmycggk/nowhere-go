@@ -1,4 +1,4 @@
-// Package veccheck validates Nowhere 1.5 harness vectors against the wire codecs.
+// Package veccheck validates Nowhere harness vectors against the wire codecs.
 package veccheck
 
 import (
@@ -255,6 +255,7 @@ func buildFlowHeader(tc vectors.FlowCase) (wire.FlowHeader, error) {
 		Kind:     parseKind(tc.Kind),
 		Uplink:   parseCarrier(tc.Uplink),
 		Downlink: parseCarrier(tc.Downlink),
+		Hops:     tc.Hops,
 	}, nil
 }
 

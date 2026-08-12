@@ -21,10 +21,11 @@ type claimMetadata struct {
 	Kind     wire.FlowKind
 	Uplink   wire.Carrier
 	Downlink wire.Carrier
+	Hops     uint8
 }
 
 func (m claimMetadata) equal(other claimMetadata) bool {
-	return m.Kind == other.Kind && m.Uplink == other.Uplink && m.Downlink == other.Downlink
+	return m.Kind == other.Kind && m.Uplink == other.Uplink && m.Downlink == other.Downlink && m.Hops == other.Hops
 }
 
 type flowClaim struct {

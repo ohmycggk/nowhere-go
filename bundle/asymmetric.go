@@ -11,7 +11,7 @@ import (
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
-func (b *CarrierBundle) openAsymmetricTCP(ctx context.Context, target wire.Target, payloadPrefix []byte) (net.Conn, error) {
+func (b *CarrierBundle) openAsymmetricTCP(ctx context.Context, target wire.Target, payloadPrefix []byte, hops uint8) (net.Conn, error) {
 	up, down := b.cfg.up, b.cfg.down
 	flowID, err := b.allocFlowID()
 	if err != nil {
@@ -21,8 +21,7 @@ func (b *CarrierBundle) openAsymmetricTCP(ctx context.Context, target wire.Targe
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	openHeader := wire.FlowHeader{Role: wire.FlowRoleOpen, FlowID: flowID, Kind: wire.FlowKindTCP, Uplink: up, Downlink: down}
-	attachHeader := wire.FlowHeader{Role: wire.FlowRoleAttach, FlowID: flowID, Kind: wire.FlowKindTCP, Uplink: up, Downlink: down}
+	openHeader, attachHeader := newSplitFlowHeaders(flowID, wire.FlowKindTCP, up, down, hops)
 
 	var (
 		tcpHeader  wire.FlowHeader

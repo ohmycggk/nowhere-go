@@ -31,6 +31,11 @@ func TestFlowHeaderFixedVectors(t *testing.T) {
 			FlowHeader{Role: FlowRoleDuplex, FlowID: 0x01020304, Kind: FlowKindUDP, Uplink: CarrierQUIC, Downlink: CarrierQUIC},
 			[FlowHeaderLen]byte{0x1c, 1, 2, 3, 4},
 		},
+		{
+			"duplex-tcp-max-hops",
+			FlowHeader{Role: FlowRoleDuplex, FlowID: 0x01020304, Kind: FlowKindTCP, Uplink: CarrierTLSTCP, Downlink: CarrierTLSTCP, Hops: MaxPortalHops},
+			[FlowHeaderLen]byte{0xe0, 1, 2, 3, 4},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,9 +63,6 @@ func TestFlowHeaderRejectsInvalid(t *testing.T) {
 		{0, 0, 0, 0},       // short
 		{0, 0, 0, 0, 0, 0}, // long
 		{0, 0, 0, 0, 0},    // zero flow id
-		{0x20, 0, 0, 0, 1}, // reserved bit
-		{0x40, 0, 0, 0, 1}, // reserved bit
-		{0x80, 0, 0, 0, 1}, // reserved bit
 		{0x03, 0, 0, 0, 1}, // invalid role
 		{0x10, 0, 0, 0, 1}, // duplex carrier mismatch
 		{0x01, 0, 0, 0, 1}, // open split carrier match
@@ -69,6 +71,39 @@ func TestFlowHeaderRejectsInvalid(t *testing.T) {
 		if _, err := DecodeFlowHeader(frame); err == nil {
 			t.Fatalf("expected decode error for %x", frame)
 		}
+	}
+}
+
+func TestFlowHeaderAllPortalHopBudgetsRoundTrip(t *testing.T) {
+	for hops := uint8(0); hops <= MaxPortalHops; hops++ {
+		header := FlowHeader{
+			Role: FlowRoleDuplex, FlowID: 42, Kind: FlowKindTCP,
+			Uplink: CarrierTLSTCP, Downlink: CarrierTLSTCP, Hops: hops,
+		}
+		encoded, err := WriteFlowHeader(header)
+		if err != nil {
+			t.Fatalf("hops=%d encode: %v", hops, err)
+		}
+		if got := encoded[0] >> flowHopsShift; got != hops {
+			t.Fatalf("hops=%d encoded=%d", hops, got)
+		}
+		decoded, err := DecodeFlowHeader(encoded[:])
+		if err != nil {
+			t.Fatalf("hops=%d decode: %v", hops, err)
+		}
+		if decoded != header {
+			t.Fatalf("hops=%d decoded mismatch: got %+v want %+v", hops, decoded, header)
+		}
+	}
+}
+
+func TestFlowHeaderRejectsHopBudgetAboveMaximum(t *testing.T) {
+	header := FlowHeader{
+		Role: FlowRoleDuplex, FlowID: 1, Kind: FlowKindTCP,
+		Uplink: CarrierTLSTCP, Downlink: CarrierTLSTCP, Hops: MaxPortalHops + 1,
+	}
+	if _, err := WriteFlowHeader(header); err == nil {
+		t.Fatal("expected excessive hop budget to fail")
 	}
 }
 

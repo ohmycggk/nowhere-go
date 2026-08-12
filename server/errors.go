@@ -38,6 +38,9 @@ var (
 	ErrTLSNotConfigured = errors.New("nowhere: TCP enabled but no TLS handshaker configured")
 	// ErrUnsupportedFlow identifies a valid frame unsupported by this endpoint.
 	ErrUnsupportedFlow = errors.New("nowhere: unsupported flow")
+	// ErrPortalHopLimit identifies a native Portal forwarding attempt whose
+	// remaining HOPS budget is one and therefore cannot be forwarded again.
+	ErrPortalHopLimit = errors.New("nowhere: native Portal forwarding hop limit reached")
 )
 
 // ReportedError marks an error that the protocol core already emitted to Observer.

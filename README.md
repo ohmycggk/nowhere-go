@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Lockstep upgrade required:** Nowhere 1.5 uses connection-bound TLS exporter authentication and does not accept the 1.4 data plane. Upgrade the Rust Portal and every client together.
+> **Compatibility:** Nowhere 1.5 and 1.6 share the same data plane. Nowhere 1.7 keeps their authentication, targets, setup results, UoT, and DATAGRAM formats, but assigns the FLOW header's high three bits to HOPS. Direct Vector flows still send HOPS=0 and interoperate with 1.5/1.6; every Portal in a native chain must support 1.7 because older endpoints reject nonzero HOPS as reserved bits. The 1.4 data plane remains incompatible.
 
 ---
 
@@ -43,13 +43,13 @@ Hosts keep:
 
 ```text
 nowhere-go/
-├── wire/                       # shared 1.5 codec, credentials, and typed targets
+├── wire/                       # shared 1.7 codec, credentials, HOPS, and typed targets
 ├── carrier/
 │   ├── tcptls/                 # TLS/TCP pool (TCPDialer / TLSDialer injected)
 │   └── quic/                   # outbound QuicBackend interfaces (no implementation)
 ├── bundle/                     # outbound CarrierBundle (up/down = tcp|udp)
 ├── server/                     # inbound Server / Handler / Upstream
-├── testdata/vectors/           # byte copy of harness/vectors for standalone CI
+├── testdata/vectors/           # module-local conformance corpus derived from the pinned Rust tests
 ├── cmd/nowhere-check/          # CI helper (vectors / version) — not a proxy
 └── tests/
 ```
@@ -188,6 +188,47 @@ type Upstream interface {
 
 The Upstream calls `readiness.Ready()` only after the target route is established, or `readiness.Reject(err)` when setup fails. The selected downlink carries the resulting typed setup result.
 
+`server.FlowInfoFromContext(ctx)` exposes the current FLOW metadata to custom
+Upstream implementations without changing the `Upstream` interface. In 1.7,
+`FlowInfo.Hops` is the incoming native forwarding budget.
+
+### Native Portal chaining
+
+Use `server.NewPortalUpstream` when an inbound Portal should forward through
+another Nowhere Portal instead of dialing the target directly. The next-hop
+`CarrierBundle` may use any of the four symmetric or asymmetric carrier
+matrices; downstream setup rejection codes are returned unchanged.
+
+```go
+nextBundle, err := bundle.NewCarrierBundle(nextPortalOptions)
+if err != nil {
+	return err
+}
+portalUpstream, err := server.NewPortalUpstream(nextBundle)
+if err != nil {
+	_ = nextBundle.Close()
+	return err
+}
+srv, err := server.NewServer(server.ServerOptions{
+	Config: cfg, TLS: tlsConfig, Upstream: portalUpstream,
+	QUICListener: hostQuicListener,
+})
+if err != nil {
+	_ = nextBundle.Close()
+	return err
+}
+
+// Shutdown order matters: PortalUpstream borrows, but does not own, the Bundle.
+_ = srv.Close()        // first stop and drain inbound handlers
+_ = nextBundle.Close() // then close next-hop carriers
+```
+
+An incoming HOPS=0 is initialized to 7, values 2..7 are decremented, and an
+attempt to forward HOPS=1 is rejected with `FLOW_LIMIT`. Direct
+`OpenTCP`, `OpenTCPWithPayload`, `OpenUDP`, and `OpenUDPAsync` calls always send
+HOPS=0; only Portal forwarding should normally use `OpenTCPWithHops` or
+`OpenUDPWithHops`.
+
 On success the Upstream owns the wrapped connection lifecycle. Closing the wrapper or invoking the context `CloseHandler` closes every physical carrier and invokes each host callback exactly once. Normal close passes `nil`; terminal failures pass their cause. Callbacks run synchronously after close, must not block, and panics are isolated and reported to the Observer.
 
 For host-owned listeners, call `Handler.BeginDrain()` before stopping transport
@@ -232,7 +273,7 @@ go work init ./nowhere-go ./sing-box ./sing-box/test ./mihomo ./mihomo/test
 # or: go work use ./nowhere-go ./sing-box ...
 ```
 
-Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 1.5 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
+Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 1.7 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
 
 Temporarily ignore the workspace:
 

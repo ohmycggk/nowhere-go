@@ -9,9 +9,13 @@ import (
 // big-endian uint32 flow id.
 const FlowHeaderLen = 5
 
-// FlowID identifies one logical flow scoped to a session. Nowhere 1.5 carries
+// FlowID identifies one logical flow scoped to a session. Nowhere carries
 // it as a non-zero uint32.
 type FlowID = uint32
+
+// MaxPortalHops is the largest remaining native Portal forwarding budget
+// representable in the FLOW header.
+const MaxPortalHops uint8 = 7
 
 // FlowRole is the relationship of the current physical lane to a logical flow.
 type FlowRole uint8
@@ -50,7 +54,7 @@ const (
 	flowKindBit     byte = 0b0000_0100
 	flowUplinkBit   byte = 0b0000_1000
 	flowDownlinkBit byte = 0b0001_0000
-	flowReserved    byte = 0b1110_0000
+	flowHopsShift        = 5
 )
 
 // FlowHeader is the fully decoded logical-flow metadata.
@@ -60,11 +64,17 @@ type FlowHeader struct {
 	Kind     FlowKind
 	Uplink   Carrier
 	Downlink Carrier
+	// Hops is the remaining native Portal forwarding budget. Vector-originated
+	// flows use zero; the first forwarding Portal initializes it to seven.
+	Hops uint8
 }
 
 // Validate enforces role/id/carrier invariants independent of the lane the
 // header arrived on.
 func (h FlowHeader) Validate() error {
+	if h.Hops > MaxPortalHops {
+		return errors.New("nowhere: portal hop budget exceeds 7")
+	}
 	if h.FlowID == 0 {
 		return errors.New("nowhere: zero flow id")
 	}
@@ -137,7 +147,8 @@ func writeFlowHeaderUnchecked(h FlowHeader) [FlowHeaderLen]byte {
 	flags := byte(h.Role) |
 		(byte(h.Kind) << 2) |
 		(byte(h.Uplink) << 3) |
-		(byte(h.Downlink) << 4)
+		(byte(h.Downlink) << 4) |
+		(byte(h.Hops) << flowHopsShift)
 	var out [FlowHeaderLen]byte
 	out[0] = flags
 	encodeUint32BE(out[1:], h.FlowID)
@@ -150,9 +161,6 @@ func DecodeFlowHeader(b []byte) (FlowHeader, error) {
 		return FlowHeader{}, ErrInvalidFlowHeader
 	}
 	flags := b[0]
-	if flags&flowReserved != 0 {
-		return FlowHeader{}, ErrInvalidFlowHeader
-	}
 	role := FlowRole(flags & flowRoleMask)
 	kind := FlowKindTCP
 	if flags&flowKindBit != 0 {
@@ -172,6 +180,7 @@ func DecodeFlowHeader(b []byte) (FlowHeader, error) {
 		Kind:     kind,
 		Uplink:   uplink,
 		Downlink: downlink,
+		Hops:     flags >> flowHopsShift,
 	}
 	if err := h.Validate(); err != nil {
 		return FlowHeader{}, ErrInvalidFlowHeader

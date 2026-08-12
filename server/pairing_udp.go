@@ -42,6 +42,7 @@ type udpDownlink interface {
 type pairedUDP struct {
 	FlowID      wire.FlowID
 	Target      wire.Target
+	Hops        uint8
 	Uplink      udpUplink
 	Downlink    udpDownlink
 	IdleTimeout time.Duration
@@ -73,7 +74,7 @@ func (r *claimRegistry) SubmitUDPWithGeneration(ctx context.Context, sessionID w
 	claim := flowClaim{
 		SessionID: sessionID, FlowID: header.FlowID, Generation: generation, BoundGeneration: boundGeneration,
 		Role: header.Role, Carrier: carrier,
-		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink},
+		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink, Hops: header.Hops},
 		Target:   target, Stream: udpHalfResultConn(half), UDP: half, Source: source,
 	}
 	active, err := r.Submit(ctx, claim)
@@ -94,7 +95,7 @@ func (r *claimRegistry) SubmitUDPWithGeneration(ctx context.Context, sessionID w
 		return nil, fmt.Errorf("%w: incomplete UDP pair", ErrInvalidHandler)
 	}
 	return &pairedUDP{
-		FlowID: header.FlowID, Target: active.Target, Uplink: uplink, Downlink: downlink,
+		FlowID: header.FlowID, Target: active.Target, Hops: active.Metadata.Hops, Uplink: uplink, Downlink: downlink,
 		Readiness: active.Readiness, Context: active.Context, Release: active.Release,
 	}, nil
 }

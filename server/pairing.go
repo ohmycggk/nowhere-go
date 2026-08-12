@@ -44,7 +44,7 @@ func (r *claimRegistry) SubmitTCPWithSource(ctx context.Context, sessionID wire.
 	active, err := r.Submit(ctx, flowClaim{
 		SessionID: sessionID, FlowID: header.FlowID, Generation: r.CurrentGeneration(sessionID),
 		Role: header.Role, Carrier: carrier,
-		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink},
+		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink, Hops: header.Hops},
 		Target:   target, Stream: conn, Source: source,
 	})
 	if err != nil || active == nil {

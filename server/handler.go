@@ -64,6 +64,8 @@ func NewHandler(options HandlerOptions) (*Handler, error) {
 	upstream := options.Upstream
 	if dialUpstream, ok := upstream.(*DialUpstream); ok {
 		upstream = dialUpstream.withTCPReadGrace(options.Config.timeouts.TCPReadGrace)
+	} else if portalUpstream, ok := upstream.(*PortalUpstream); ok {
+		upstream = portalUpstream.withTCPReadGrace(options.Config.timeouts.TCPReadGrace)
 	}
 	claims := newClaimRegistry(options.Config.timeouts.FlowPair, options.Config.limits)
 	claims.setObserver(options.Observer)
@@ -358,7 +360,7 @@ func (h *Handler) rejectFlowSetupGeneration(conn net.Conn, sessionID wire.Sessio
 	h.claims.RejectClaim(flowClaim{
 		SessionID: sessionID, FlowID: header.FlowID, Generation: generation, BoundGeneration: boundGeneration,
 		Role: header.Role, Carrier: carrier,
-		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink},
+		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink, Hops: header.Hops},
 		Stream:   conn,
 	}, &setupResultError{code: code})
 }
@@ -389,7 +391,7 @@ func (h *Handler) handleTCPFlowGeneration(ctx context.Context, conn net.Conn, so
 	active, err := h.claims.Submit(ctx, flowClaim{
 		SessionID: sessionID, FlowID: header.FlowID, Generation: generation, BoundGeneration: boundGeneration,
 		Role: header.Role, Carrier: physical,
-		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink},
+		Metadata: claimMetadata{Kind: header.Kind, Uplink: header.Uplink, Downlink: header.Downlink, Hops: header.Hops},
 		Target:   target, Stream: conn, Source: source,
 	})
 	if err != nil || active == nil {
@@ -411,7 +413,8 @@ func (h *Handler) handleTCPFlowGeneration(ctx context.Context, conn net.Conn, so
 			target: active.Target, resultWriter: active.Selected.Stream, onClose: active.Release,
 		}
 	}
-	return h.routeStream(withClaimContext(ctx, active.Context), routed, source, active.Target, active.Readiness, active.Release)
+	flowCtx := withFlowInfo(withClaimContext(ctx, active.Context), FlowInfo{Hops: active.Metadata.Hops})
+	return h.routeStream(flowCtx, routed, source, active.Target, active.Readiness, active.Release)
 }
 
 func (h *Handler) handleUDPStreamFlowGeneration(ctx context.Context, conn net.Conn, source net.Addr, sessionID wire.SessionID, generation uint64, boundGeneration bool, header wire.FlowHeader, target wire.Target) error {
@@ -446,7 +449,8 @@ func (h *Handler) routeCompletedUDP(ctx context.Context, source net.Addr, paired
 	if conn, ok := packetConn.(*pairedUDPConn); ok && paired.Readiness != nil {
 		paired.Readiness.setOnReady(conn.markReady)
 	}
-	return h.routePacket(withClaimContext(ctx, paired.Context), packetConn, source, paired.Target, paired.Readiness, paired.Release)
+	flowCtx := withFlowInfo(withClaimContext(ctx, paired.Context), FlowInfo{Hops: paired.Hops})
+	return h.routePacket(flowCtx, packetConn, source, paired.Target, paired.Readiness, paired.Release)
 }
 
 func validateFlowTransport(header wire.FlowHeader, physical wire.Carrier) error {

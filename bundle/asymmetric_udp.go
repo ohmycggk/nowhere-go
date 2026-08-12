@@ -12,7 +12,7 @@ import (
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
-func (b *CarrierBundle) openAsymmetricUDP(ctx context.Context, target wire.Target) (net.PacketConn, error) {
+func (b *CarrierBundle) openAsymmetricUDP(ctx context.Context, target wire.Target, hops uint8) (net.PacketConn, error) {
 	up, down := b.cfg.up, b.cfg.down
 	flowID, err := b.allocFlowID()
 	if err != nil {
@@ -24,9 +24,9 @@ func (b *CarrierBundle) openAsymmetricUDP(ctx context.Context, target wire.Targe
 
 	switch {
 	case up == wire.CarrierTLSTCP && down == wire.CarrierQUIC:
-		return b.openTCPUDP(ctx, cancel, target, flowID, up, down, started)
+		return b.openTCPUDP(ctx, cancel, target, flowID, up, down, hops, started)
 	case up == wire.CarrierQUIC && down == wire.CarrierTLSTCP:
-		return b.openUDPTCP(ctx, cancel, target, flowID, up, down, started)
+		return b.openUDPTCP(ctx, cancel, target, flowID, up, down, hops, started)
 	default:
 		return nil, errors.New("nowhere: asymmetric udp requires mixed carriers")
 	}
@@ -39,10 +39,10 @@ func (b *CarrierBundle) openTCPUDP(
 	target wire.Target,
 	flowID wire.FlowID,
 	up, down wire.Carrier,
+	hops uint8,
 	started time.Time,
 ) (net.PacketConn, error) {
-	openHeader := wire.FlowHeader{Role: wire.FlowRoleOpen, FlowID: flowID, Kind: wire.FlowKindUDP, Uplink: up, Downlink: down}
-	attachHeader := wire.FlowHeader{Role: wire.FlowRoleAttach, FlowID: flowID, Kind: wire.FlowKindUDP, Uplink: up, Downlink: down}
+	openHeader, attachHeader := newSplitFlowHeaders(flowID, wire.FlowKindUDP, up, down, hops)
 
 	pool, err := b.tcpPool()
 	if err != nil {
@@ -125,10 +125,10 @@ func (b *CarrierBundle) openUDPTCP(
 	target wire.Target,
 	flowID wire.FlowID,
 	up, down wire.Carrier,
+	hops uint8,
 	started time.Time,
 ) (net.PacketConn, error) {
-	openHeader := wire.FlowHeader{Role: wire.FlowRoleOpen, FlowID: flowID, Kind: wire.FlowKindUDP, Uplink: up, Downlink: down}
-	attachHeader := wire.FlowHeader{Role: wire.FlowRoleAttach, FlowID: flowID, Kind: wire.FlowKindUDP, Uplink: up, Downlink: down}
+	openHeader, attachHeader := newSplitFlowHeaders(flowID, wire.FlowKindUDP, up, down, hops)
 
 	quicPrep, err := b.prepareQUICStream(ctx, openHeader.FlowID)
 	if err != nil {

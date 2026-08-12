@@ -153,6 +153,8 @@ type setupResultError struct{ code wire.SetupResult }
 
 func (e *setupResultError) Error() string { return "nowhere: setup rejected: " + e.code.String() }
 
+func (e *setupResultError) SetupResultCode() wire.SetupResult { return e.code }
+
 func newSetupResult(writer net.Conn, _ wire.FlowKind, _ wire.Carrier) *setupResult {
 	return &setupResult{writer: writer}
 }
@@ -198,9 +200,11 @@ func (r *setupResult) commitContext(ctx context.Context, result wire.SetupResult
 }
 
 func setupFailureCode(err error) wire.SetupResult {
-	var setupErr *setupResultError
+	var setupErr interface {
+		SetupResultCode() wire.SetupResult
+	}
 	if errors.As(err, &setupErr) {
-		return setupErr.code
+		return setupErr.SetupResultCode()
 	}
 	switch {
 	case errors.Is(err, ErrCarrierMismatch), errors.Is(err, wire.ErrInvalidFlowHeader), errors.Is(err, wire.ErrInvalidFrame):
@@ -209,7 +213,7 @@ func setupFailureCode(err error) wire.SetupResult {
 		return wire.SetupResultMetadataConflict
 	case errors.Is(err, ErrPairTimeout):
 		return wire.SetupResultPairTimeout
-	case errors.Is(err, ErrPairLimit), errors.Is(err, ErrSessionLimit), errors.Is(err, ErrDraining):
+	case errors.Is(err, ErrPairLimit), errors.Is(err, ErrSessionLimit), errors.Is(err, ErrDraining), errors.Is(err, ErrPortalHopLimit):
 		return wire.SetupResultFlowLimit
 	case errors.Is(err, ErrClosed), errors.Is(err, net.ErrClosed), errors.Is(err, context.Canceled):
 		return wire.SetupResultSessionReplaced

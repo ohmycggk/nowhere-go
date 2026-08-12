@@ -1,12 +1,12 @@
 {
   "protocol": "nowhere-v1",
-  "upstream_version": "1.5.2",
-  "upstream_commit": "1625181d223be9d9b8447d009e6883c0254da37c",
-  "exporter_version": "nowhere-vector-export/2",
+  "upstream_version": "1.7.0",
+  "upstream_commit": "362091688e36b6f305f17b921aa39d66886d1462",
+  "exporter_version": "nowhere-vector-export/3",
   "sources": {
     "protocol_md": "Nowhere/docs/protocol.md",
     "rust_auth": "Nowhere/src/tests/protocol/auth.rs::hkdf_and_auth_frames_match_fixed_vectors",
-    "rust_flow": "Nowhere/src/tests/protocol/flow.rs::fixed_vectors_pack_flags_and_network_order_id",
+    "rust_flow": "Nowhere/src/tests/protocol/flow.rs",
     "rust_target": "Nowhere/src/tests/protocol/request.rs + util.rs",
     "rust_datagram": "Nowhere/src/tests/protocol/datagram.rs",
     "rust_uot": "Nowhere/src/tests/protocol/uot.rs::packet_codec_contains_only_u16_length_and_payload",
@@ -21,11 +21,11 @@
     "result.json"
   ],
   "notes": [
-    "harness/vectors is the authoritative Nowhere 1.5.2 corpus",
-    "nowhere-go/testdata/vectors is a byte-for-byte module-local copy written by export-rust-vectors.sh",
+    "no upstream JSON corpus exists; vectors derive from the pinned Rust test suite (see sources) and are codec cross-checked",
+    "nowhere-go/testdata/vectors is the module-local conformance corpus",
     "complete wire hex tables must not be maintained by hand",
     "1.5 auth is connection-bound: tag = HMAC-SHA256(auth_key, transport || exporter || session_id)[0:16]",
-    "1.5 flow header is 5 bytes (flags + u32 BE flow_id); flow_id is uint32, not uint64",
+    "1.7 flow header remains 5 bytes; flags high three bits carry HOPS 0..7 and flow_id remains uint32 BE",
     "1.5 setup result is a single byte (0..7); no magic/version prefix",
     "1.5 UoT is u16 BE length + payload (no type byte)",
     "1.5 datagram DATA/CLOSE are 5-byte headers, FRAGMENT is 13 bytes"

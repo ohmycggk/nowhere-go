@@ -60,7 +60,7 @@ func encodeFlowSetupBytes(header wire.FlowHeader, target wire.Target) ([]byte, e
 	return out, nil
 }
 
-func (b *CarrierBundle) newFlowSetup(kind wire.FlowKind, role wire.FlowRole, target wire.Target) (flowSetup, error) {
+func (b *CarrierBundle) newFlowSetup(kind wire.FlowKind, role wire.FlowRole, target wire.Target, hops uint8) (flowSetup, error) {
 	flowID, err := b.allocFlowID()
 	if err != nil {
 		return flowSetup{}, err
@@ -72,13 +72,25 @@ func (b *CarrierBundle) newFlowSetup(kind wire.FlowKind, role wire.FlowRole, tar
 			Kind:     kind,
 			Uplink:   b.cfg.up,
 			Downlink: b.cfg.down,
+			Hops:     hops,
 		},
 		target: target,
 	}, nil
 }
 
-func (b *CarrierBundle) newDuplexSetup(kind wire.FlowKind, target wire.Target) (flowSetup, error) {
-	return b.newFlowSetup(kind, wire.FlowRoleDuplex, target)
+func (b *CarrierBundle) newDuplexSetup(kind wire.FlowKind, target wire.Target, hops uint8) (flowSetup, error) {
+	return b.newFlowSetup(kind, wire.FlowRoleDuplex, target, hops)
+}
+
+func newSplitFlowHeaders(flowID wire.FlowID, kind wire.FlowKind, up, down wire.Carrier, hops uint8) (wire.FlowHeader, wire.FlowHeader) {
+	base := wire.FlowHeader{
+		FlowID: flowID, Kind: kind, Uplink: up, Downlink: down, Hops: hops,
+	}
+	open := base
+	open.Role = wire.FlowRoleOpen
+	attach := base
+	attach.Role = wire.FlowRoleAttach
+	return open, attach
 }
 
 // prepareTCPHalf acquires a TLS/TCP carrier for the given header. Authentication
@@ -230,6 +242,16 @@ func isTimeoutErr(err error) bool {
 // stage context with %w.
 type SetupResultError struct {
 	Code wire.SetupResult
+}
+
+// SetupResultCode returns the exact non-READY result received from Portal.
+// Server-side native forwarding uses this stable contract to propagate an
+// upstream rejection to the originating flow without collapsing its cause.
+func (e *SetupResultError) SetupResultCode() wire.SetupResult {
+	if e == nil {
+		return wire.SetupResultInternalError
+	}
+	return e.Code
 }
 
 func (e *SetupResultError) Error() string {
