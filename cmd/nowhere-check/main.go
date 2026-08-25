@@ -111,6 +111,18 @@ func runSelfCheck() error {
 	if _, err := wire.ValidateAuthFrame(authFrame[:], creds, wire.AuthTransportTLSTCP, exporter); err != nil {
 		return err
 	}
+	header, err := wire.StreamMuxHeader(0x01020304, wire.MuxFlagSYN, 0x0506)
+	if err != nil {
+		return err
+	}
+	encoded, err := wire.EncodeMuxHeader(header)
+	if err != nil {
+		return err
+	}
+	want := [wire.MuxHeaderLen]byte{1, wire.MuxFlagSYN, 0x05, 0x06, 1, 2, 3, 4}
+	if encoded != want {
+		return fmt.Errorf("mux header vector mismatch")
+	}
 	return nil
 }
 

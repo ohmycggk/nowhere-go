@@ -29,6 +29,7 @@ func CheckDir(dir string) (int, error) {
 		{"datagram.json", checkDatagram},
 		{"uot.json", checkUOT},
 		{"result.json", checkResult},
+		{"mux.json", checkMux},
 	}
 	for _, c := range checkers {
 		count, err := c.fn(filepath.Join(dir, c.name))

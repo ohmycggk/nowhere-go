@@ -1,0 +1,134 @@
+{
+  "protocol": "nowhere-v1",
+  "source": {
+    "rust": "Nowhere/src/tests/mux/wire.rs + Nowhere/src/mux/wire.rs"
+  },
+  "cases": [
+    {
+      "id": "stream-syn-stable-vector",
+      "operation": "header",
+      "valid": true,
+      "kind": "stream",
+      "flags": 1,
+      "value": 1286,
+      "flow_id": "16909060",
+      "frame_hex": "0101050601020304"
+    },
+    {
+      "id": "stream-syn-empty",
+      "operation": "header",
+      "valid": true,
+      "kind": "stream",
+      "flags": 1,
+      "value": 0,
+      "flow_id": "7",
+      "frame_hex": "0101000000000007"
+    },
+    {
+      "id": "stream-fin-empty",
+      "operation": "header",
+      "valid": true,
+      "kind": "stream",
+      "flags": 2,
+      "value": 0,
+      "flow_id": "7",
+      "frame_hex": "0102000000000007"
+    },
+    {
+      "id": "stream-rst",
+      "operation": "header",
+      "valid": true,
+      "kind": "stream",
+      "flags": 4,
+      "value": 0,
+      "flow_id": "7",
+      "frame_hex": "0104000000000007"
+    },
+    {
+      "id": "window-connection",
+      "operation": "header",
+      "valid": true,
+      "kind": "window",
+      "flags": 0,
+      "value": 1024,
+      "flow_id": "0",
+      "frame_hex": "0200040000000000"
+    },
+    {
+      "id": "window-stream",
+      "operation": "header",
+      "valid": true,
+      "kind": "window",
+      "flags": 0,
+      "value": 1,
+      "flow_id": "7",
+      "frame_hex": "0200000100000007"
+    },
+    {
+      "id": "datagram-valid",
+      "operation": "header",
+      "valid": true,
+      "kind": "datagram",
+      "flags": 0,
+      "value": 1,
+      "flow_id": "1",
+      "frame_hex": "0300000100000001"
+    },
+    {
+      "id": "stream-zero-flow-id",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0100000100000000",
+      "error_code": "invalid_flow_id"
+    },
+    {
+      "id": "datagram-zero-flow-id",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0300000100000000",
+      "error_code": "invalid_flow_id"
+    },
+    {
+      "id": "stream-rst-with-fin",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0106000000000001",
+      "error_code": "invalid_reset"
+    },
+    {
+      "id": "stream-rst-with-payload",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0104000100000001",
+      "error_code": "invalid_reset"
+    },
+    {
+      "id": "window-zero-credit",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0200000000000000",
+      "error_code": "invalid_window"
+    },
+    {
+      "id": "window-nonzero-flags",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0201000100000000",
+      "error_code": "reserved_flags"
+    },
+    {
+      "id": "unknown-kind",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "0400000100000001",
+      "error_code": "unknown_kind"
+    },
+    {
+      "id": "short-7",
+      "operation": "header",
+      "valid": false,
+      "frame_hex": "01010000000000",
+      "error_code": "invalid_length"
+    }
+  ]
+}

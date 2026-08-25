@@ -1,7 +1,7 @@
 {
   "protocol": "nowhere-v1",
-  "upstream_version": "1.7.0",
-  "upstream_commit": "362091688e36b6f305f17b921aa39d66886d1462",
+  "upstream_version": "1.8.1",
+  "upstream_commit": "cd8820c7b30ffcd5ba9896fb1c2e6915613f5ffd",
   "exporter_version": "nowhere-vector-export/3",
   "sources": {
     "protocol_md": "Nowhere/docs/protocol.md",
@@ -10,7 +10,8 @@
     "rust_target": "Nowhere/src/tests/protocol/request.rs + util.rs",
     "rust_datagram": "Nowhere/src/tests/protocol/datagram.rs",
     "rust_uot": "Nowhere/src/tests/protocol/uot.rs::packet_codec_contains_only_u16_length_and_payload",
-    "rust_result": "Nowhere/src/tests/protocol/result.rs::every_result_has_one_stable_wire_byte"
+    "rust_result": "Nowhere/src/tests/protocol/result.rs::every_result_has_one_stable_wire_byte",
+    "rust_mux": "Nowhere/src/tests/mux/wire.rs + Nowhere/src/mux/wire.rs"
   },
   "files": [
     "auth.json",
@@ -18,7 +19,8 @@
     "flow.json",
     "datagram.json",
     "uot.json",
-    "result.json"
+    "result.json",
+    "mux.json"
   ],
   "notes": [
     "no upstream JSON corpus exists; vectors derive from the pinned Rust test suite (see sources) and are codec cross-checked",
@@ -26,6 +28,8 @@
     "complete wire hex tables must not be maintained by hand",
     "1.5 auth is connection-bound: tag = HMAC-SHA256(auth_key, transport || exporter || session_id)[0:16]",
     "1.7 flow header remains 5 bytes; flags high three bits carry HOPS 0..7 and flow_id remains uint32 BE",
+    "1.8 OPEN/ATTACH may use equal carriers; Vector still emits DUPLEX when both directions match",
+    "1.8 TLS Mux marker is 0xff after AuthFrame; MuxHeader is 8 bytes kind|flags|value u16|flow_id u32",
     "1.5 setup result is a single byte (0..7); no magic/version prefix",
     "1.5 UoT is u16 BE length + payload (no type byte)",
     "1.5 datagram DATA/CLOSE are 5-byte headers, FRAGMENT is 13 bytes"
