@@ -48,6 +48,9 @@ type BundleOptions struct {
 	Up wire.Carrier
 	// Down selects the target-to-client physical carrier.
 	Down wire.Carrier
+	// Mux selects dedicated TLS lanes (0, default) or marked Mux shards (1).
+	// Portal accepts both on the same listener. Mux has no effect on QUIC.
+	Mux MuxMode
 }
 
 type bundleConfig struct {
@@ -62,6 +65,7 @@ type bundleConfig struct {
 	prewarmOnStart   bool
 	up               wire.Carrier
 	down             wire.Carrier
+	mux              MuxMode
 }
 
 // CarrierBundle shares one session id across carriers and allocates flow ids.
@@ -85,6 +89,10 @@ type CarrierBundle struct {
 	tcp     *tcptls.TCPPool
 	tcpErr  error
 
+	muxOnce sync.Once
+	mux     *tcptls.MuxManager
+	muxErr  error
+
 	// nextFlowID is the next 1.5 flow id to hand out. Flow ids are uint32 and
 	// must skip zero; the allocator wraps within the nonzero u32 space.
 	nextFlowID atomic.Uint32
@@ -99,6 +107,9 @@ type CarrierBundle struct {
 func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 	if !isCarrier(options.Up) || !isCarrier(options.Down) {
 		return nil, errors.New("nowhere: invalid carrier selector")
+	}
+	if err := options.Mux.validate(); err != nil {
+		return nil, err
 	}
 	if options.Credentials == nil {
 		return nil, wire.ErrMissingCredentials
@@ -121,6 +132,9 @@ func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 	if usesQUIC && options.PoolSize != 0 {
 		return nil, errors.New("nowhere: pool must be zero when either carrier is QUIC")
 	}
+	if options.Mux == MuxEnabled && options.PoolSize != 0 {
+		return nil, errors.New("nowhere: pool must be zero when TLS mux is enabled")
+	}
 	maxUDPQueueBytes := options.MaxUDPQueueBytes
 	if maxUDPQueueBytes == 0 {
 		maxUDPQueueBytes = DefaultMaxUDPQueueBytes
@@ -141,6 +155,7 @@ func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 		maxUDPQueueBytes: maxUDPQueueBytes, maxPendingCloses: maxPendingCloses,
 		prewarmOnStart: options.PrewarmOnStart,
 		up:             options.Up, down: options.Down,
+		mux: options.Mux,
 	}}
 	bundle.nextFlowID.Store(1)
 	if _, err := bundle.SessionID(); err != nil {
@@ -265,6 +280,9 @@ func (b *CarrierBundle) tcpPool() (*tcptls.TCPPool, error) {
 	if b.cfg.up != wire.CarrierTLSTCP && b.cfg.down != wire.CarrierTLSTCP {
 		return nil, nil
 	}
+	if b.cfg.mux == MuxEnabled {
+		return nil, nil
+	}
 	b.tcpOnce.Do(func() {
 		b.lifecycleMu.Lock()
 		defer b.lifecycleMu.Unlock()
@@ -294,6 +312,7 @@ func (b *CarrierBundle) Close() error {
 		b.closed = true
 		quicClient := b.quic
 		tcpPool := b.tcp
+		muxMgr := b.mux
 		b.lifecycleMu.Unlock()
 		var errs []error
 		if quicClient != nil {
@@ -301,6 +320,9 @@ func (b *CarrierBundle) Close() error {
 		}
 		if tcpPool != nil {
 			errs = append(errs, tcpPool.Close())
+		}
+		if muxMgr != nil {
+			errs = append(errs, muxMgr.Close())
 		}
 		b.closeErr = errors.Join(errs...)
 	})

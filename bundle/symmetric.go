@@ -107,11 +107,15 @@ func (b *CarrierBundle) openSymmetricTCPTCP(ctx context.Context, target wire.Tar
 	if err != nil {
 		return nil, err
 	}
-	half, err := b.prepareTCPHalf(ctx, target, setup.header, len(payloadPrefix) > 0)
+	conn, err := b.openTCPCarrier(ctx, target, setup.header, payloadPrefix, len(payloadPrefix) > 0)
 	if err != nil {
 		return nil, fmtError("prepare tcp duplex", err)
 	}
-	return commitTCPFlow(half, payloadPrefix)
+	if err := readSetupResult(conn); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (b *CarrierBundle) openSymmetricUDPQUIC(ctx context.Context, target wire.Target, payloadPrefix []byte, hops uint8) (net.Conn, error) {
@@ -127,13 +131,9 @@ func (b *CarrierBundle) openSymmetricTCPUDP(ctx context.Context, target wire.Tar
 	if err != nil {
 		return nil, err
 	}
-	half, err := b.prepareTCPHalf(ctx, target, setup.header, false)
+	conn, err := b.openTCPCarrier(ctx, target, setup.header, nil, false)
 	if err != nil {
 		return nil, fmtError("prepare tcp uot duplex", err)
-	}
-	conn, err := half.Commit()
-	if err != nil {
-		return nil, err
 	}
 	if err := readSetupResult(conn); err != nil {
 		_ = conn.Close()
