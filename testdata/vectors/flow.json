@@ -99,11 +99,15 @@
       "frame_hex": "ce00000002"
     },
     {
-      "id": "open-split-carrier-match",
+      "id": "open-equal-carriers",
       "operation": "flow_header",
-      "valid": false,
-      "frame_hex": "0100000001",
-      "error_code": "split_carrier_match"
+      "valid": true,
+      "role": "open",
+      "flow_id": "1",
+      "kind": "tcp",
+      "uplink": "tls_tcp",
+      "downlink": "tls_tcp",
+      "frame_hex": "0100000001"
     },
     {
       "id": "open-udp-quic-tcp",

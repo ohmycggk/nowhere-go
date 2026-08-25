@@ -84,9 +84,8 @@ func (h FlowHeader) Validate() error {
 			return errors.New("nowhere: duplex carrier mismatch")
 		}
 	case FlowRoleOpen, FlowRoleAttach:
-		if h.Uplink == h.Downlink {
-			return errors.New("nowhere: split carriers must differ")
-		}
+		// Nowhere 1.8 allows OPEN/ATTACH with equal carriers. Vector still
+		// emits DUPLEX when both directions share a carrier.
 	default:
 		return errors.New("nowhere: invalid flow role")
 	}

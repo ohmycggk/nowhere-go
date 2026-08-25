@@ -65,7 +65,6 @@ func TestFlowHeaderRejectsInvalid(t *testing.T) {
 		{0, 0, 0, 0, 0},    // zero flow id
 		{0x03, 0, 0, 0, 1}, // invalid role
 		{0x10, 0, 0, 0, 1}, // duplex carrier mismatch
-		{0x01, 0, 0, 0, 1}, // open split carrier match
 	}
 	for _, frame := range invalids {
 		if _, err := DecodeFlowHeader(frame); err == nil {
@@ -104,6 +103,21 @@ func TestFlowHeaderRejectsHopBudgetAboveMaximum(t *testing.T) {
 	}
 	if _, err := WriteFlowHeader(header); err == nil {
 		t.Fatal("expected excessive hop budget to fail")
+	}
+}
+
+func TestFlowHeaderAllowsOpenAttachWithEqualCarriers(t *testing.T) {
+	open := FlowHeader{Role: FlowRoleOpen, FlowID: 1, Kind: FlowKindTCP, Uplink: CarrierTLSTCP, Downlink: CarrierTLSTCP}
+	encoded, err := WriteFlowHeader(open)
+	if err != nil {
+		t.Fatalf("open equal carriers: %v", err)
+	}
+	if encoded[0] != 0x01 {
+		t.Fatalf("open flags=%x want 0x01", encoded[0])
+	}
+	attach := FlowHeader{Role: FlowRoleAttach, FlowID: 1, Kind: FlowKindUDP, Uplink: CarrierQUIC, Downlink: CarrierQUIC}
+	if _, err := WriteFlowHeader(attach); err != nil {
+		t.Fatalf("attach equal carriers: %v", err)
 	}
 }
 
