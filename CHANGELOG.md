@@ -13,6 +13,38 @@ Rust Portal and all clients.
 
 ### Changed
 
+- Align the protocol oracle, FLOW vectors, Mux codec, and lock metadata with
+  Nowhere v1.8.1 at upstream commit `cd8820c7b30ffcd5ba9896fb1c2e6915613f5ffd`.
+- Tighten Mux shard density from 12 to 4 active flows, matching Nowhere 1.8.1.
+  QUIC flow-control remains host-injected; the Rust binary now defaults
+  `NOW_QUIC_MEMORY_PROFILE` to `throughput`.
+- Accept OPEN/ATTACH FlowHeaders whose uplink and downlink carriers are equal,
+  matching the 1.8 decoder. Vector-originated equal-carrier flows still use
+  DUPLEX.
+- Preserve inbound `FlowInfo` (including HOPS) when a transferable transport
+  is claimed as a route task.
+
+### Added
+
+- Implement the Nowhere 1.8 TLS Mux wire (0xff marker, 8-byte MuxHeader,
+  STREAM/WINDOW/DATAGRAM) and the credit-windowed stream engine in
+  `carrier/mux`.
+- Auto-detect dedicated vs marked Mux TLS after AuthFrame on inbound
+  `Handler.ServeTCP`. Portal remains optionless.
+- Add `bundle.BundleOptions.Mux` (`0` dedicated, `1` shards). Mux shards open
+  lazily at 4 active flows per direction, idle-close after 30s, and never
+  reuse the dedicated warm pool. `PoolSize` must be zero when Mux is enabled.
+- Export Mux header vectors derived from `Nowhere/src/tests/mux/wire.rs`.
+
+### Documentation
+
+- Document 1.8 Mux auto-detect, client `mux=0|1`, and OPEN/ATTACH equal-carrier
+  decoding. Dedicated mux=0 envelopes remain the 1.7 TLS lane.
+
+## v1.7.0 - 2026-08-12
+
+### Changed
+
 - Align the protocol oracle, FLOW vectors, and lock metadata with Nowhere
   v1.7.0 at upstream commit `362091688e36b6f305f17b921aa39d66886d1462`.
 - Encode the Nowhere 1.7 HOPS budget in the FLOW header high three bits and

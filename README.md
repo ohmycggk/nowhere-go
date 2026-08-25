@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 1.5 and 1.6 share the same data plane. Nowhere 1.7 keeps their authentication, targets, setup results, UoT, and DATAGRAM formats, but assigns the FLOW header's high three bits to HOPS. Direct Vector flows still send HOPS=0 and interoperate with 1.5/1.6; every Portal in a native chain must support 1.7 because older endpoints reject nonzero HOPS as reserved bits. The 1.4 data plane remains incompatible.
+> **Compatibility:** Nowhere 1.5–1.7 share the same authentication, targets, setup results, UoT, and DATAGRAM formats. 1.7 assigned the FLOW header's high three bits to HOPS. Nowhere 1.8 keeps that data plane and adds TLS Mux: after AuthFrame, `0xff` selects Mux frames and any other byte is dedicated FlowHeader. Dedicated `mux=0` clients still interoperate with 1.8 Portal. OPEN/ATTACH may name equal carriers; Vector still emits DUPLEX when both directions match. The 1.4 data plane remains incompatible.
 
 ---
 
@@ -27,8 +27,8 @@ Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) �
 
 | Side | Packages | Responsibility |
 |---|---|---|
-| Shared wire | `wire` | Credentials, exporter-bound auth, FLOW/setup results, NOWU fragmentation, typed UoT |
-| Outbound | `carrier/tcptls`, `carrier/quic`, `bundle` | Connection pool, injected QUIC dial backend, four-matrix session orchestration |
+| Shared wire | `wire` | Credentials, exporter-bound auth, FLOW/setup results, TLS Mux, NOWU fragmentation, typed UoT |
+| Outbound | `carrier/tcptls`, `carrier/mux`, `carrier/quic`, `bundle` | Dedicated TLS pool or Mux shards, injected QUIC dial backend, four-matrix session orchestration |
 | Inbound | `server` | Listen / accept orchestration, auth, flow pairing, NOWU/UoT state, QUIC session loop, upstream handoff |
 
 Hosts keep:
@@ -43,9 +43,10 @@ Hosts keep:
 
 ```text
 nowhere-go/
-├── wire/                       # shared 1.7 codec, credentials, HOPS, and typed targets
+├── wire/                       # shared 1.8 codec, credentials, HOPS, Mux, and typed targets
 ├── carrier/
-│   ├── tcptls/                 # TLS/TCP pool (TCPDialer / TLSDialer injected)
+│   ├── tcptls/                 # TLS/TCP pool and Mux shards (TCPDialer / TLSDialer injected)
+│   ├── mux/                    # TLS Mux stream engine (STREAM/WINDOW credit)
 │   └── quic/                   # outbound QuicBackend interfaces (no implementation)
 ├── bundle/                     # outbound CarrierBundle (up/down = tcp|udp)
 ├── server/                     # inbound Server / Handler / Upstream
@@ -94,9 +95,10 @@ b, err := bundle.NewCarrierBundle(bundle.BundleOptions{
 	TCP:         tcp,
 	QUIC:        hostQuicBackend, // required when Up or Down is CarrierQUIC
 	Credentials: credentials,     // bundle owns v1.5 carrier authentication
-	PoolSize:    0,               // required when either direction uses QUIC
+	PoolSize:    0,               // required when either direction uses QUIC, or Mux=1
 	Up:          up,
 	Down:        down,
+	Mux:         bundle.MuxDisabled, // MuxEnabled originates marked TLS shards
 })
 if err != nil {
     return err
@@ -114,7 +116,7 @@ See [`bundle/example_test.go`](bundle/example_test.go) for a compile-checked
 `tcp/tcp` constructor example. Host adapters remain responsible for concrete
 dialer, TLS, and QUIC implementations.
 
-Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while mixed-carrier flows use `OPEN` plus `ATTACH`.
+Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while mixed-carrier flows use `OPEN` plus `ATTACH`. `Mux` defaults to dedicated TLS lanes. `MuxEnabled` writes AuthFrame + `0xff` and multiplexes logical streams; Portal auto-detects both on the same TLS listener. QUIC never uses TLS Mux frames.
 
 ---
 
@@ -189,7 +191,7 @@ type Upstream interface {
 The Upstream calls `readiness.Ready()` only after the target route is established, or `readiness.Reject(err)` when setup fails. The selected downlink carries the resulting typed setup result.
 
 `server.FlowInfoFromContext(ctx)` exposes the current FLOW metadata to custom
-Upstream implementations without changing the `Upstream` interface. In 1.7,
+Upstream implementations without changing the `Upstream` interface. In 1.7+,
 `FlowInfo.Hops` is the incoming native forwarding budget.
 
 ### Native Portal chaining
@@ -273,7 +275,7 @@ go work init ./nowhere-go ./sing-box ./sing-box/test ./mihomo ./mihomo/test
 # or: go work use ./nowhere-go ./sing-box ...
 ```
 
-Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 1.7 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
+Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 1.8 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
 
 Temporarily ignore the workspace:
 
