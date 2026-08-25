@@ -346,20 +346,6 @@ func closeWriteSide(value any) error {
 	return errors.New("nowhere: write side does not support close")
 }
 
-// commitTCPFlow writes the FLOW setup and optional initial payload prefix on a
-// TCP half, then reads the SetupResult.
-func commitTCPFlow(half *tcptls.PreparedFlowHalf, payloadPrefix []byte) (net.Conn, error) {
-	conn, err := half.CommitWithPayload(payloadPrefix)
-	if err != nil {
-		return nil, err
-	}
-	if err := readSetupResult(conn); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return conn, nil
-}
-
 func appendOpeningPayload(setup, payloadPrefix []byte) []byte {
 	if len(payloadPrefix) == 0 {
 		return setup

@@ -535,12 +535,5 @@ func (s *shared) sendOutbound(item outbound) error {
 	}
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 var _ io.ReadWriteCloser = (*Stream)(nil)
 var _ net.Conn = (*Stream)(nil)
