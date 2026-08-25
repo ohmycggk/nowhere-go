@@ -1,7 +1,8 @@
-// Package wire implements the Nowhere 1.7 wire format.
+// Package wire implements the Nowhere 1.8 wire format.
 //
 // The codec mirrors the Rust oracle in Nowhere/src/protocol one-to-one:
 //   - 32-byte connection-bound authentication frame
+//   - optional TLS Mux marker 0xff followed by 8-byte Mux frames
 //   - 5-byte flow header (flags with HOPS + big-endian uint32 flow id)
 //   - SOCKS5-style typed target address
 //   - single-byte setup result

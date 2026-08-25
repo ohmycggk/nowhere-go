@@ -8,6 +8,7 @@ var (
 	ErrInvalidTarget        = errors.New("nowhere: invalid target address")
 	ErrInvalidFrame         = errors.New("nowhere: invalid frame")
 	ErrInvalidFlowHeader    = errors.New("nowhere: invalid flow header")
+	ErrInvalidMuxHeader     = errors.New("nowhere: invalid mux header")
 	ErrInvalidAuthFrame     = errors.New("nowhere: invalid authentication frame")
 	ErrInvalidAuthTransport = errors.New("nowhere: invalid authentication transport")
 	ErrMissingCredentials   = errors.New("nowhere: missing credentials")
