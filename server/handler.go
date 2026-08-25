@@ -322,6 +322,21 @@ func (h *Handler) handleTCPConn(ctx context.Context, conn *ownedConn, source net
 	_ = conn.SetDeadline(time.Time{})
 	_ = conn.SetReadDeadline(h.now().Add(h.config.timeouts.RequestIdle))
 
+	peeked, err := stream.reader.Peek(1)
+	if err != nil {
+		conn.closeWithError(err)
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+			h.emit(ctx, diagnostic.LevelError, "request_read_failed", source, "", sessionID, 0, err)
+			return report(err)
+		}
+		return err
+	}
+	if peeked[0] == wire.MuxMarker {
+		_, _ = stream.reader.Discard(1)
+		_ = conn.SetDeadline(time.Time{})
+		return h.handleMuxTCP(ctx, stream, source, sessionID)
+	}
+
 	header, err := wire.ReadFlowHeader(stream)
 	if err != nil {
 		conn.closeWithError(err)
