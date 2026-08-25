@@ -471,7 +471,18 @@ func validateFlowTransport(header wire.FlowHeader, physical wire.Carrier) error 
 
 func (h *Handler) startRouteTask(ctx context.Context) (context.Context, func(), error) {
 	if ownership := taskOwnershipFrom(ctx); ownership != nil {
-		return ownership.claim()
+		taskCtx, finish, err := ownership.claim()
+		if err != nil {
+			return nil, nil, err
+		}
+		// Transferable transports are registered before the FLOW header is
+		// decoded, so their owned context cannot contain per-flow metadata yet.
+		// Preserve the authenticated HOPS value when ownership moves from the
+		// physical carrier to the logical route task.
+		if info, ok := FlowInfoFromContext(ctx); ok {
+			taskCtx = withFlowInfo(taskCtx, info)
+		}
+		return taskCtx, finish, nil
 	}
 	return h.tasks.Start(ctx)
 }

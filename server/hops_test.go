@@ -86,3 +86,22 @@ func TestFlowInfoContextRoundTrip(t *testing.T) {
 		t.Fatal("unexpected FlowInfo on plain context")
 	}
 }
+
+func TestStartRouteTaskPreservesFlowInfoAfterTransportOwnershipTransfer(t *testing.T) {
+	tracker := newTaskTracker()
+	transportCtx, ownership, err := tracker.StartTransferableTransport(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("StartTransferableTransport: %v", err)
+	}
+	handler := &Handler{tasks: tracker}
+	flowCtx := withFlowInfo(withTaskOwnership(transportCtx, ownership), FlowInfo{Hops: 5})
+	routeCtx, finish, err := handler.startRouteTask(flowCtx)
+	if err != nil {
+		t.Fatalf("startRouteTask: %v", err)
+	}
+	defer finish()
+	info, ok := FlowInfoFromContext(routeCtx)
+	if !ok || info.Hops != 5 {
+		t.Fatalf("FlowInfoFromContext=(%+v,%v), want HOPS=5", info, ok)
+	}
+}
