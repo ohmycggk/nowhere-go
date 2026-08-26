@@ -14,7 +14,8 @@ Rust Portal and all clients.
 ### Changed
 
 - Align the protocol oracle, FLOW vectors, Mux codec, and lock metadata with
-  Nowhere v1.8.1 at upstream commit `cd8820c7b30ffcd5ba9896fb1c2e6915613f5ffd`.
+  Nowhere v1.8.2 at upstream commit `8807960c8ac49c26e5d1019a463eb51d821c54dd`.
+  The 1.8.2 wire is identical to 1.8.1; upstream only pins `quinn-proto` 0.11.16.
 - Tighten Mux shard density from 12 to 4 active flows, matching Nowhere 1.8.1.
   QUIC flow-control remains host-injected; the Rust binary now defaults
   `NOW_QUIC_MEMORY_PROFILE` to `throughput`.
