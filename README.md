@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 1.5–1.7 share the same authentication, targets, setup results, UoT, and DATAGRAM formats. 1.7 assigned the FLOW header's high three bits to HOPS. Nowhere 1.8 keeps that data plane and adds TLS Mux: after AuthFrame, `0xff` selects Mux frames and any other byte is dedicated FlowHeader. Dedicated `mux=0` clients still interoperate with 1.8 Portal. OPEN/ATTACH may name equal carriers; Vector still emits DUPLEX when both directions match. The 1.4 data plane remains incompatible.
+> **Compatibility:** Nowhere 1.5–1.7 share the same authentication, targets, setup results, UoT, and DATAGRAM formats. 1.7 assigned the FLOW header's high three bits to HOPS. Nowhere 1.8 keeps that data plane and adds TLS Mux: after AuthFrame, `0xff` selects Mux frames and any other byte is dedicated FlowHeader. Dedicated `mux=0` clients still interoperate with 1.8 Portal. OPEN/ATTACH may name equal carriers; Vector still emits DUPLEX when both directions match. Nowhere 1.8.3 adds a client-only `mix` policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. The 1.4 data plane remains incompatible.
 
 ---
 
@@ -93,9 +93,9 @@ if err != nil {
 up, down := wire.CarrierTLSTCP, wire.CarrierQUIC
 b, err := bundle.NewCarrierBundle(bundle.BundleOptions{
 	TCP:         tcp,
-	QUIC:        hostQuicBackend, // required when Up or Down is CarrierQUIC
+	QUIC:        hostQuicBackend, // required when Up, Down, or mix can select QUIC
 	Credentials: credentials,     // bundle owns v1.5 carrier authentication
-	PoolSize:    0,               // required when either direction uses QUIC, or Mux=1
+	PoolSize:    0,               // required when either direction uses QUIC, mix, or Mux=1
 	Up:          up,
 	Down:        down,
 	Mux:         bundle.MuxDisabled, // MuxEnabled originates marked TLS shards
@@ -116,7 +116,7 @@ See [`bundle/example_test.go`](bundle/example_test.go) for a compile-checked
 `tcp/tcp` constructor example. Host adapters remain responsible for concrete
 dialer, TLS, and QUIC implementations.
 
-Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while mixed-carrier flows use `OPEN` plus `ATTACH`. `Mux` defaults to dedicated TLS lanes. `MuxEnabled` writes AuthFrame + `0xff` and multiplexes logical streams; Portal auto-detects both on the same TLS listener. QUIC never uses TLS Mux frames.
+Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. Set `MixUp` and/or `MixDown` for the 1.8.3 `tcp|udp|mix` matrix; `mix/mix` resolves only to `tcp/tcp` or `udp/udp`. Mix is client-side: the primary pair has a one-second preparation budget, then the other allowed pair is tried once with a new flow ID. Starting a FlowHeader or Target write commits the flow. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while mixed-carrier flows use `OPEN` plus `ATTACH`. `Mux` defaults to dedicated TLS lanes. `MuxEnabled` writes AuthFrame + `0xff` and multiplexes logical streams; Portal auto-detects both on the same TLS listener. QUIC never uses TLS Mux frames. `udp/udp&mux=1` canonicalizes to `mux=0`.
 
 ---
 

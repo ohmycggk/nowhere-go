@@ -361,19 +361,6 @@ func commitQUICHalf(ctx context.Context, prep *quicPreparedStream, setup []byte,
 	return prep.commit(ctx, setup, finishWrite)
 }
 
-// commitQUICFlow writes a control-only setup and reads the SetupResult.
-func commitQUICFlow(ctx context.Context, prep *quicPreparedStream, setup []byte) (net.Conn, error) {
-	conn, err := prep.Commit(ctx, setup)
-	if err != nil {
-		return nil, err
-	}
-	if err := readSetupResult(conn); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return conn, nil
-}
-
 func asymmetricCarrierIDs(up, down wire.Carrier, tcpIsOpen bool, tcpCarrierID uint64) (upID, downID uint64) {
 	if up == wire.CarrierTLSTCP {
 		upID = tcpCarrierID

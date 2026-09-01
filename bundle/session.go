@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ohmycggk/nowhere-go/carrier"
 	"github.com/ohmycggk/nowhere-go/carrier/tcptls"
@@ -25,9 +26,11 @@ const (
 
 // BundleOptions builds an immutable carrier bundle.
 type BundleOptions struct {
-	// QUIC is required when either direction selects CarrierQUIC.
+	// QUIC is required when either direction can select CarrierQUIC,
+	// including any mix policy.
 	QUIC carrier.QuicBackend
-	// TCP is required when either direction selects CarrierTLSTCP.
+	// TCP is required when either direction can select CarrierTLSTCP,
+	// including any mix policy.
 	TCP *tcptls.Config
 	// Credentials authenticates every physical carrier in the bundle.
 	Credentials *wire.Credentials
@@ -36,7 +39,7 @@ type BundleOptions struct {
 	// Observer receives structured lifecycle and failure events.
 	Observer diagnostic.Observer
 	// PoolSize is the TLS/TCP idle target for tcp/tcp and must be zero
-	// whenever either direction uses QUIC.
+	// whenever either direction can select QUIC, including mix.
 	PoolSize int
 	// MaxUDPQueueBytes bounds queued and reassembling QUIC DATAGRAM payload.
 	MaxUDPQueueBytes int
@@ -44,28 +47,43 @@ type BundleOptions struct {
 	MaxPendingCloses int
 	// PrewarmOnStart starts TLS/TCP pool preparation during construction.
 	PrewarmOnStart bool
-	// Up selects the client-to-target physical carrier.
+	// Up selects the client-to-target physical carrier when MixUp is false.
 	Up wire.Carrier
-	// Down selects the target-to-client physical carrier.
+	// Down selects the target-to-client physical carrier when MixDown is false.
 	Down wire.Carrier
+	// MixUp treats uplink as the 1.8.3 mix policy. FlowHeader never carries mix.
+	MixUp bool
+	// MixDown treats downlink as the 1.8.3 mix policy. mix/mix resolves only
+	// to tcp/tcp or udp/udp.
+	MixDown bool
+	// MixFallbackTimeout is the primary mix-route preparation budget. Zero
+	// uses DefaultMixFallbackTimeout. READY and payload failures do not fall back.
+	MixFallbackTimeout time.Duration
 	// Mux selects dedicated TLS lanes (0, default) or marked Mux shards (1).
-	// Portal accepts both on the same listener. Mux has no effect on QUIC.
+	// Portal accepts both on the same listener. Mux has no effect on QUIC
+	// and canonicalizes to 0 for a fixed udp/udp route.
 	Mux MuxMode
 }
 
 type bundleConfig struct {
-	quic             carrier.QuicBackend
-	tcp              *tcptls.Config
-	credentials      *wire.Credentials
-	alpn             string
-	observer         diagnostic.Observer
-	poolSize         int
-	maxUDPQueueBytes int
-	maxPendingCloses int
-	prewarmOnStart   bool
-	up               wire.Carrier
-	down             wire.Carrier
-	mux              MuxMode
+	quic               carrier.QuicBackend
+	tcp                *tcptls.Config
+	credentials        *wire.Credentials
+	alpn               string
+	observer           diagnostic.Observer
+	poolSize           int
+	maxUDPQueueBytes   int
+	maxPendingCloses   int
+	prewarmOnStart     bool
+	up                 wire.Carrier
+	down               wire.Carrier
+	upMode             CarrierMode
+	downMode           CarrierMode
+	usesTCP            bool
+	usesQUIC           bool
+	routeSeed          uint64
+	mixFallbackTimeout time.Duration
+	mux                MuxMode
 }
 
 // CarrierBundle shares one session id across carriers and allocates flow ids.
@@ -105,8 +123,13 @@ type CarrierBundle struct {
 
 // NewCarrierBundle validates options and returns an isolated session bundle.
 func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
-	if !isCarrier(options.Up) || !isCarrier(options.Down) {
-		return nil, errors.New("nowhere: invalid carrier selector")
+	upMode, err := carrierMode(options.Up, options.MixUp)
+	if err != nil {
+		return nil, err
+	}
+	downMode, err := carrierMode(options.Down, options.MixDown)
+	if err != nil {
+		return nil, err
 	}
 	if err := options.Mux.validate(); err != nil {
 		return nil, err
@@ -118,12 +141,23 @@ func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	usesTCP := options.Up == wire.CarrierTLSTCP || options.Down == wire.CarrierTLSTCP
-	usesQUIC := options.Up == wire.CarrierQUIC || options.Down == wire.CarrierQUIC
+	usesTCP := upMode != ModeUDP || downMode != ModeUDP
+	usesQUIC := upMode != ModeTCP || downMode != ModeTCP
+	up, down := options.Up, options.Down
+	if upMode.IsMix() {
+		up = 0
+	}
+	if downMode.IsMix() {
+		down = 0
+	}
+	mux := options.Mux
+	if !usesTCP {
+		mux = MuxDisabled
+	}
 	if usesTCP && options.TCP == nil {
 		return nil, errors.New("nowhere: nil TCP carrier config")
 	}
-	if (options.Up == wire.CarrierQUIC || options.Down == wire.CarrierQUIC) && options.QUIC == nil {
+	if usesQUIC && options.QUIC == nil {
 		return nil, errors.New("nowhere: nil quic backend")
 	}
 	if options.PoolSize < 0 || options.PoolSize > tcptls.MaxPoolSize {
@@ -132,8 +166,15 @@ func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 	if usesQUIC && options.PoolSize != 0 {
 		return nil, errors.New("nowhere: pool must be zero when either carrier is QUIC")
 	}
-	if options.Mux == MuxEnabled && options.PoolSize != 0 {
+	if mux == MuxEnabled && options.PoolSize != 0 {
 		return nil, errors.New("nowhere: pool must be zero when TLS mux is enabled")
+	}
+	if options.MixFallbackTimeout < 0 {
+		return nil, errors.New("nowhere: negative mix fallback timeout")
+	}
+	mixFallbackTimeout := options.MixFallbackTimeout
+	if mixFallbackTimeout == 0 {
+		mixFallbackTimeout = DefaultMixFallbackTimeout
 	}
 	maxUDPQueueBytes := options.MaxUDPQueueBytes
 	if maxUDPQueueBytes == 0 {
@@ -154,23 +195,24 @@ func NewCarrierBundle(options BundleOptions) (*CarrierBundle, error) {
 		alpn: alpn, observer: options.Observer, poolSize: options.PoolSize,
 		maxUDPQueueBytes: maxUDPQueueBytes, maxPendingCloses: maxPendingCloses,
 		prewarmOnStart: options.PrewarmOnStart,
-		up:             options.Up, down: options.Down,
-		mux: options.Mux,
+		up:             up, down: down,
+		upMode: upMode, downMode: downMode,
+		usesTCP: usesTCP, usesQUIC: usesQUIC,
+		mixFallbackTimeout: mixFallbackTimeout,
+		mux:                mux,
 	}}
 	bundle.nextFlowID.Store(1)
-	if _, err := bundle.SessionID(); err != nil {
+	sessionID, err := bundle.SessionID()
+	if err != nil {
 		return nil, err
 	}
+	bundle.cfg.routeSeed = seedFromSession(sessionID)
 	if options.PrewarmOnStart && options.PoolSize > 0 {
 		if _, err := bundle.tcpPool(); err != nil {
 			return nil, err
 		}
 	}
 	return bundle, nil
-}
-
-func isCarrier(value wire.Carrier) bool {
-	return value == wire.CarrierTLSTCP || value == wire.CarrierQUIC
 }
 
 // SessionID returns the lazily generated identity shared by all bundle carriers.
@@ -195,14 +237,26 @@ func (b *CarrierBundle) SessionID() (wire.SessionID, error) {
 	return b.sessionID, b.sessionIDErr
 }
 
-// UpCarrier returns the configured uplink carrier.
+// UpCarrier returns the configured uplink carrier. Mix uplink is 0.
 func (b *CarrierBundle) UpCarrier() wire.Carrier { return b.cfg.up }
 
-// DownCarrier returns the configured downlink carrier.
+// DownCarrier returns the configured downlink carrier. Mix downlink is 0.
 func (b *CarrierBundle) DownCarrier() wire.Carrier { return b.cfg.down }
 
-// Asymmetric reports whether uplink and downlink use different carriers.
-func (b *CarrierBundle) Asymmetric() bool { return b.cfg.up != b.cfg.down }
+// UpMode returns the client uplink policy, including mix.
+func (b *CarrierBundle) UpMode() CarrierMode { return b.cfg.upMode }
+
+// DownMode returns the client downlink policy, including mix.
+func (b *CarrierBundle) DownMode() CarrierMode { return b.cfg.downMode }
+
+// MixEnabled reports whether either direction uses the mix policy.
+func (b *CarrierBundle) MixEnabled() bool {
+	return b.cfg.upMode.IsMix() || b.cfg.downMode.IsMix()
+}
+
+// Asymmetric reports whether the configured policies select different
+// carriers. mix/mix is symmetric; a one-sided mix can resolve to either.
+func (b *CarrierBundle) Asymmetric() bool { return b.cfg.upMode != b.cfg.downMode }
 
 // PoolTarget returns the configured TLS/TCP idle-pool target.
 func (b *CarrierBundle) PoolTarget() int { return b.cfg.poolSize }
@@ -236,7 +290,7 @@ func (b *CarrierBundle) allocFlowID() (wire.FlowID, error) {
 }
 
 func (b *CarrierBundle) quicClient() (carrier.QuicBackend, error) {
-	if b.cfg.up != wire.CarrierQUIC && b.cfg.down != wire.CarrierQUIC {
+	if !b.cfg.usesQUIC {
 		return nil, nil
 	}
 	b.quicOnce.Do(func() {
@@ -277,7 +331,7 @@ func buildQUICAuthFrame(session carrier.QuicSession, creds *wire.Credentials, al
 }
 
 func (b *CarrierBundle) tcpPool() (*tcptls.TCPPool, error) {
-	if b.cfg.up != wire.CarrierTLSTCP && b.cfg.down != wire.CarrierTLSTCP {
+	if !b.cfg.usesTCP {
 		return nil, nil
 	}
 	if b.cfg.mux == MuxEnabled {

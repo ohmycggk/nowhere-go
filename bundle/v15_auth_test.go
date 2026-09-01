@@ -246,6 +246,7 @@ type v15AuthPreparedStream struct {
 	finishWrite bool
 	commits     int
 	conn        net.Conn
+	commitErr   error
 }
 
 func (s *v15AuthPreparedStream) Commit(_ context.Context, setup []byte, finishWrite bool) (net.Conn, error) {
@@ -254,7 +255,11 @@ func (s *v15AuthPreparedStream) Commit(_ context.Context, setup []byte, finishWr
 	s.finishWrite = finishWrite
 	s.commits++
 	conn := s.conn
+	commitErr := s.commitErr
 	s.mu.Unlock()
+	if commitErr != nil {
+		return nil, commitErr
+	}
 	if conn != nil {
 		return conn, nil
 	}

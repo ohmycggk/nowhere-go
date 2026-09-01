@@ -52,14 +52,14 @@ type asyncUDPConn struct {
 	target wire.Target
 	cancel context.CancelFunc
 
-	queue chan queuedUDPPacket
-	ready chan struct{}
+	queue  chan queuedUDPPacket
+	ready  chan struct{}
 	closed chan struct{}
 
-	mu       sync.Mutex
-	inner    net.PacketConn
-	setupErr error
-	closeErr error
+	mu         sync.Mutex
+	inner      net.PacketConn
+	setupErr   error
+	closeErr   error
 	closedFlag bool
 
 	rd deadlineWatch

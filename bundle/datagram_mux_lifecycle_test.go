@@ -115,6 +115,58 @@ func TestQUICMuxDropsDataBeforeReadyAndReleasesOnClose(t *testing.T) {
 	}
 }
 
+func TestPreparedQUICDatagramsActivateOnlyAfterREADY(t *testing.T) {
+	session := newTestQUICSessionMux(t, 64, 4)
+	prep := &quicPreparedStream{session: session, id: 9}
+	prepared, err := prepareQUICDatagrams(prep, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := session.flows[9]
+	if flow == nil || flow.ready() {
+		t.Fatalf("prepared flow = %v ready=%t", flow, flow != nil && flow.ready())
+	}
+	session.deliver(9, []byte("before-ready"))
+	if got := len(flow.packets); got != 0 {
+		t.Fatalf("packets before READY = %d", got)
+	}
+	handle, err := prepared.Activate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !flow.ready() || handle.flow != flow || handle.flowID != 9 {
+		t.Fatalf("activated handle = %+v ready=%t", handle, flow.ready())
+	}
+	session.deliver(9, []byte("ready"))
+	if got := len(flow.packets); got != 1 {
+		t.Fatalf("packets after READY = %d", got)
+	}
+	if err := handle.closePacket(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAbandonedPreparedQUICDatagramsDoNotQueueClose(t *testing.T) {
+	session := newTestQUICSessionMux(t, 64, 4)
+	prep := &quicPreparedStream{session: session, id: 11}
+	prepared, err := prepareQUICDatagrams(prep, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.flows[11] == nil {
+		t.Fatal("flow was not registered during preparation")
+	}
+	if err := prepared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if session.flows[11] != nil {
+		t.Fatal("abandoned registration was not removed")
+	}
+	if got := len(session.closeQueue); got != 0 {
+		t.Fatalf("abandoned registration queued %d CLOSE frames", got)
+	}
+}
+
 func TestQUICMuxFragmentReservationReleasedOnShutdown(t *testing.T) {
 	session := newTestQUICSessionMux(t, 64, 4)
 	flow, err := session.register(1)
@@ -249,12 +301,18 @@ func (*muxLifecycleBackend) Close() error { return nil }
 type muxLifecycleSession struct {
 	receive chan []byte
 	fail    chan struct{}
+	send    func([]byte) error
+	prepare func(context.Context) (carrier.QuicPreparedStream, error)
 }
 
 func (*muxLifecycleSession) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
 	return wire.TLSHandshakeInfo{TLSVersion: 0x0304, NegotiatedALPN: wire.DefaultALPN}, nil
 }
-func (*muxLifecycleSession) PrepareStream(context.Context) (carrier.QuicPreparedStream, error) {
+
+func (s *muxLifecycleSession) PrepareStream(ctx context.Context) (carrier.QuicPreparedStream, error) {
+	if s.prepare != nil {
+		return s.prepare(ctx)
+	}
 	return nil, errors.New("unused")
 }
 func (s *muxLifecycleSession) ReceiveDatagram(ctx context.Context) ([]byte, error) {
@@ -287,11 +345,14 @@ func (s *muxLifecycleSession) ReceiveDatagram(ctx context.Context) ([]byte, erro
 	}
 }
 func (*muxLifecycleSession) CurrentMaxDatagramSize() int { return 1200 }
-func (*muxLifecycleSession) SendDatagram(ctx context.Context, _ []byte) error {
+func (s *muxLifecycleSession) SendDatagram(ctx context.Context, payload []byte) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+		if s.send != nil {
+			return s.send(payload)
+		}
 		return nil
 	}
 }

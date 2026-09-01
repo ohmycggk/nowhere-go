@@ -207,6 +207,17 @@ type qSessionHandle struct {
 	writeDeadline *datagramDeadline
 }
 
+// preparedQUICDatagrams owns a downlink registration before the FlowHeader is
+// committed. Close abandons only the local registration; Activate transfers it
+// to a live qSessionHandle after READY.
+type preparedQUICDatagrams struct {
+	mu      sync.Mutex
+	quic    *quicPreparedStream
+	session *quicSessionMux
+	flow    *quicDatagramFlow
+	flowID  wire.FlowID
+}
+
 func newQSessionHandle(prep *quicPreparedStream, flow *quicDatagramFlow, flowID wire.FlowID, setupErr error) *qSessionHandle {
 	return &qSessionHandle{
 		quic:          prep,
@@ -219,7 +230,7 @@ func newQSessionHandle(prep *quicPreparedStream, flow *quicDatagramFlow, flowID 
 	}
 }
 
-func newQUICDatagramHandle(prep *quicPreparedStream, flowID wire.FlowID) (*qSessionHandle, error) {
+func prepareQUICDatagrams(prep *quicPreparedStream, flowID wire.FlowID) (*preparedQUICDatagrams, error) {
 	if prep == nil || prep.session == nil {
 		return nil, errors.New("nowhere: nil quic session")
 	}
@@ -231,11 +242,42 @@ func newQUICDatagramHandle(prep *quicPreparedStream, flowID wire.FlowID) (*qSess
 	if err != nil {
 		return nil, err
 	}
+	return &preparedQUICDatagrams{
+		quic: prep, session: session, flow: flow, flowID: flowID,
+	}, nil
+}
+
+func (p *preparedQUICDatagrams) Activate() (*qSessionHandle, error) {
+	if p == nil {
+		return nil, errors.New("nowhere: nil prepared QUIC UDP registration")
+	}
+	p.mu.Lock()
+	if p.flow == nil || p.session == nil || p.quic == nil {
+		p.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	flow, session, prep, flowID := p.flow, p.session, p.quic, p.flowID
+	p.flow, p.session, p.quic = nil, nil, nil
+	p.mu.Unlock()
 	if !flow.markReady() {
 		session.unregister(flowID, flow, net.ErrClosed)
 		return nil, net.ErrClosed
 	}
 	return newQSessionHandle(prep, flow, flowID, nil), nil
+}
+
+func (p *preparedQUICDatagrams) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	flow, session, flowID := p.flow, p.session, p.flowID
+	p.flow, p.session, p.quic = nil, nil, nil
+	p.mu.Unlock()
+	if flow != nil && session != nil {
+		session.unregister(flowID, flow, net.ErrClosed)
+	}
+	return nil
 }
 
 func newQUICSendHandle(prep *quicPreparedStream, flowID wire.FlowID) *qSessionHandle {
@@ -266,14 +308,10 @@ func (h *qSessionHandle) recordUDPDrop(bytes int, direction, reason string) {
 	mux.recordUDPDrop(h.flowID, bytes, direction, reason)
 }
 
-func newQUICPacketConn(prep *quicPreparedStream, control net.Conn, target wire.Target) *quicPacketConn {
+func newQUICPacketConn(handle *qSessionHandle, control net.Conn, target wire.Target) *quicPacketConn {
 	flowID := wire.FlowID(0)
-	if prep != nil {
-		flowID = prep.flowID()
-	}
-	handle, err := newQUICDatagramHandle(prep, flowID)
-	if err != nil {
-		handle = newQSessionHandle(prep, nil, flowID, err)
+	if handle != nil {
+		flowID = handle.flowID
 	}
 	return &quicPacketConn{
 		session:     handle,

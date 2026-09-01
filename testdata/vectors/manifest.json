@@ -1,7 +1,7 @@
 {
   "protocol": "nowhere-v1",
-  "upstream_version": "1.8.2",
-  "upstream_commit": "8807960c8ac49c26e5d1019a463eb51d821c54dd",
+  "upstream_version": "1.8.3",
+  "upstream_commit": "7041032b346d713f3c6bf25db9e3d7b2a41e1315",
   "exporter_version": "nowhere-vector-export/3",
   "sources": {
     "protocol_md": "Nowhere/docs/protocol.md",
@@ -29,6 +29,7 @@
     "1.5 auth is connection-bound: tag = HMAC-SHA256(auth_key, transport || exporter || session_id)[0:16]",
     "1.7 flow header remains 5 bytes; flags high three bits carry HOPS 0..7 and flow_id remains uint32 BE",
     "1.8 OPEN/ATTACH may use equal carriers; Vector still emits DUPLEX when both directions match",
+    "1.8.3 mix is a client policy only; FlowHeader still carries TT, TQ, QT, or QQ",
     "1.8 TLS Mux marker is 0xff after AuthFrame; MuxHeader is 8 bytes kind|flags|value u16|flow_id u32",
     "1.5 setup result is a single byte (0..7); no magic/version prefix",
     "1.5 UoT is u16 BE length + payload (no type byte)",

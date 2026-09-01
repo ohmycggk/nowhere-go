@@ -29,7 +29,7 @@ func (m MuxMode) validate() error {
 }
 
 func (b *CarrierBundle) tlsMux() (*tcptls.MuxManager, error) {
-	if b.cfg.up != wire.CarrierTLSTCP && b.cfg.down != wire.CarrierTLSTCP {
+	if !b.cfg.usesTCP {
 		return nil, nil
 	}
 	b.muxOnce.Do(func() {

@@ -14,8 +14,11 @@ Rust Portal and all clients.
 ### Changed
 
 - Align the protocol oracle, FLOW vectors, Mux codec, and lock metadata with
-  Nowhere v1.8.2 at upstream commit `8807960c8ac49c26e5d1019a463eb51d821c54dd`.
-  The 1.8.2 wire is identical to 1.8.1; upstream only pins `quinn-proto` 0.11.16.
+  Nowhere v1.8.3 at upstream commit `7041032b346d713f3c6bf25db9e3d7b2a41e1315`.
+  The 1.8.3 data plane is identical to 1.8.2; mix is a client-side route policy.
+- Canonicalize `udp/udp&mux=1` to `mux=0`, matching Nowhere 1.8.3. Mux still
+  applies when either direction is `tcp` or `mix`.
+
 - Tighten Mux shard density from 12 to 4 active flows, matching Nowhere 1.8.1.
   QUIC flow-control remains host-injected; the Rust binary now defaults
   `NOW_QUIC_MEMORY_PROFILE` to `throughput`.
@@ -27,6 +30,16 @@ Rust Portal and all clients.
 
 ### Added
 
+- Add client `mix` policy (`BundleOptions.MixUp` / `MixDown`) with the 3×3
+  `tcp|udp|mix` matrix, `mix/mix` → TT or QQ only, and one pre-commit fallback
+  within `DefaultMixFallbackTimeout` (1s). Starting a FlowHeader or Target write
+  commits the flow; READY and payload failures do not fall back.
+- Enforce the mix preparation budget even when a carrier operation returns
+  late, make Mux shard serialization context-aware, and discard every late
+  primary-route lane before it can be used.
+- Pre-register QUIC UDP downlinks before FlowHeader commit for fixed and mixed
+  routes, activate them only after READY, and surface registration failures
+  synchronously instead of returning an unusable PacketConn.
 - Implement the Nowhere 1.8 TLS Mux wire (0xff marker, 8-byte MuxHeader,
   STREAM/WINDOW/DATAGRAM) and the credit-windowed stream engine in
   `carrier/mux`.
@@ -39,8 +52,9 @@ Rust Portal and all clients.
 
 ### Documentation
 
-- Document 1.8 Mux auto-detect, client `mux=0|1`, and OPEN/ATTACH equal-carrier
-  decoding. Dedicated mux=0 envelopes remain the 1.7 TLS lane.
+- Document 1.8 Mux auto-detect, client `mux=0|1`, OPEN/ATTACH equal-carrier
+  decoding, and the 1.8.3 mix policy with pre-commit fallback. Dedicated mux=0
+  envelopes remain the 1.7 TLS lane.
 
 ## v1.7.0 - 2026-08-12
 

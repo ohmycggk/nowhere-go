@@ -36,10 +36,10 @@ type MuxManager struct {
 }
 
 type shardSet struct {
-	mgr       *MuxManager
-	connectMu sync.Mutex
-	mu        sync.Mutex
-	shards    []*muxShard
+	mgr     *MuxManager
+	connect chan struct{}
+	mu      sync.Mutex
+	shards  []*muxShard
 }
 
 type muxShard struct {
@@ -52,9 +52,13 @@ func NewMuxManager(cfg *Config) (*MuxManager, error) {
 		return nil, errors.New("nowhere: nil TCP carrier config")
 	}
 	m := &MuxManager{cfg: cfg}
-	m.up = &shardSet{mgr: m}
-	m.down = &shardSet{mgr: m}
+	m.up = newShardSet(m)
+	m.down = newShardSet(m)
 	return m, nil
+}
+
+func newShardSet(mgr *MuxManager) *shardSet {
+	return &shardSet{mgr: mgr, connect: make(chan struct{}, 1)}
 }
 
 func (m *MuxManager) set(dir MuxDirection) *shardSet {
@@ -95,8 +99,16 @@ func (m *MuxManager) Close() error {
 }
 
 func (s *shardSet) open(ctx context.Context, flowID uint32) (net.Conn, error) {
-	s.connectMu.Lock()
-	defer s.connectMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.acquireConnect(ctx); err != nil {
+		return nil, err
+	}
+	defer s.releaseConnect()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if shard := s.selectAvailable(); shard != nil {
 		return shard.handle.OpenStream(flowID)
 	}
@@ -106,6 +118,24 @@ func (s *shardSet) open(ctx context.Context, flowID uint32) (net.Conn, error) {
 	}
 	return shard.handle.OpenStream(flowID)
 }
+
+func (s *shardSet) acquireConnect(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case s.connect <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			s.releaseConnect()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *shardSet) releaseConnect() { <-s.connect }
 
 func (s *shardSet) selectAvailable() *muxShard {
 	s.mu.Lock()
@@ -164,14 +194,16 @@ func (s *shardSet) monitor(shard *muxShard) {
 			}
 			continue
 		}
-		s.connectMu.Lock()
+		if err := s.acquireConnect(context.Background()); err != nil {
+			return
+		}
 		if shard.handle.ActiveStreams() == 0 && !shard.handle.IsClosed() {
 			s.removeLocked(shard)
-			s.connectMu.Unlock()
+			s.releaseConnect()
 			shard.handle.Close()
 			return
 		}
-		s.connectMu.Unlock()
+		s.releaseConnect()
 	}
 }
 
