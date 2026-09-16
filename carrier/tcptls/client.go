@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohmycggk/nowhere-go/carrier"
 	"github.com/ohmycggk/nowhere-go/carrier/dialgate"
+	"github.com/ohmycggk/nowhere-go/carrier/morph"
 	"github.com/ohmycggk/nowhere-go/diagnostic"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
@@ -73,6 +74,8 @@ type TCPOptions struct {
 	// DialBackoffInitial is the first delay after portal connection refused / dial timeout.
 	// Zero uses DefaultDialBackoffInitial; negative values are rejected.
 	DialBackoffInitial time.Duration
+	// MorphSharedKey enables the Morph TCP transform when non-empty.
+	MorphSharedKey []byte
 	// DialBackoffMax caps portal dial exponential backoff.
 	// Zero uses DefaultDialBackoffMax; negative values are rejected.
 	DialBackoffMax time.Duration
@@ -94,6 +97,7 @@ type Config struct {
 	warmBackoffMax     time.Duration
 	dialBackoffInitial time.Duration
 	dialBackoffMax     time.Duration
+	morph              *morph.Keys
 }
 
 // NewConfig validates a TLS/TCP carrier configuration.
@@ -159,6 +163,10 @@ func NewConfig(options TCPOptions) (*Config, error) {
 		dialBackoffMax:     dialMax,
 	}
 	config.logger = observerLogger{observer: options.Observer}
+	if len(options.MorphSharedKey) > 0 {
+		keys := morph.Derive(options.MorphSharedKey)
+		config.morph = &keys
+	}
 	return config, nil
 }
 

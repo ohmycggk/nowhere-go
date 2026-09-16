@@ -11,24 +11,24 @@ func TestDatagramDataAndCloseFixedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(data, []byte{0x00, 1, 2, 3, 4, 0xaa, 0xbb}) {
+	if !bytes.Equal(data, []byte{0x01, 2, 3, 4, 0xaa, 0xbb}) {
 		t.Fatalf("data %x", data)
 	}
 	dataZero, err := EncodeUDPData(0x01020304, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(dataZero, []byte{0x00, 1, 2, 3, 4}) {
+	if !bytes.Equal(dataZero, []byte{0x01, 2, 3, 4}) {
 		t.Fatalf("data-zero %x", dataZero)
 	}
 	close, err := EncodeUDPClose(0x01020304)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(close[:], []byte{0x02, 1, 2, 3, 4}) {
+	if !bytes.Equal(close[:], []byte{0x81, 2, 3, 4}) {
 		t.Fatalf("close %x", close[:])
 	}
-	if UDPHeaderLen != 5 {
+	if UDPHeaderLen != 4 {
 		t.Fatalf("UDPHeaderLen %d", UDPHeaderLen)
 	}
 }
@@ -45,11 +45,11 @@ func TestDatagramFragmentFixedHeader(t *testing.T) {
 	if len(frames) != 3 {
 		t.Fatalf("frame count %d want 3", len(frames))
 	}
-	want := []byte{0x01, 1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44, 0, 3, 0x09, 0xc4}
+	want := []byte{0x41, 2, 3, 4, 0x11, 0x22, 0x33, 0x44, 0, 3, 0x09, 0xc4}
 	if !bytes.Equal(frames[0][:UDPFragmentHeaderLen], want) {
 		t.Fatalf("leading fragment header %x want %x", frames[0][:UDPFragmentHeaderLen], want)
 	}
-	if UDPFragmentHeaderLen != 13 {
+	if UDPFragmentHeaderLen != 12 {
 		t.Fatalf("UDPFragmentHeaderLen %d", UDPFragmentHeaderLen)
 	}
 	// decode + reassemble
@@ -85,13 +85,10 @@ func TestDatagramRejectsShortReservedUnknownClosePayload(t *testing.T) {
 	rejects := [][]byte{
 		{},
 		{0},
-		{0, 0, 0, 0},
-		{0, 0, 0, 0, 0},    // zero flow id
-		{3, 0, 0, 0, 1},    // unknown frame type
-		{0x04, 0, 0, 0, 1}, // reserved bits
-		{0x40, 0, 0, 0, 1}, // reserved high
-		{0x82, 0, 0, 0, 1}, // reserved + close
-		{2, 0, 0, 0, 1, 0}, // close with payload
+		{0, 0, 0},
+		{0, 0, 0, 0},       // zero flow id
+		{0xc0, 0, 0, 1},    // type 0b11
+		{0x80, 0, 0, 1, 0}, // CLOSE with payload
 	}
 	for _, raw := range rejects {
 		if _, err := DecodeUDPFrame(raw); err == nil {
@@ -257,5 +254,38 @@ func TestDatagramUnfragmentedAllowsZeroPacketID(t *testing.T) {
 	}
 	if _, err := EncodeUDPDataFragments(7, 0, make([]byte, 1200), 1200); err == nil {
 		t.Fatal("fragmented packet accepted zero packet id")
+	}
+}
+
+func TestDatagramPackedMaximumIDs(t *testing.T) {
+	data, err := EncodeUDPData(MaxFlowID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, []byte{0x3f, 0xff, 0xff, 0xff}) {
+		t.Fatalf("data %x", data)
+	}
+	close, err := EncodeUDPClose(MaxFlowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(close[:], []byte{0xbf, 0xff, 0xff, 0xff}) {
+		t.Fatalf("close %x", close[:])
+	}
+	header, err := EncodeUDPFragmentHeader(MaxFlowID, UDPFragment{PacketID: 0xffffffff, FragmentIndex: 0, FragmentCount: 2, TotalLen: 2, Payload: []byte{42}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte{0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 2, 0, 2}
+	if !bytes.Equal(header[:], want) {
+		t.Fatalf("fragment %x want %x", header[:], want)
+	}
+	for _, flowID := range []FlowID{0, MaxFlowID + 1, 0xffffffff} {
+		if _, err := EncodeUDPData(flowID, nil); err == nil {
+			t.Fatalf("data accepted %x", flowID)
+		}
+		if _, err := EncodeUDPClose(flowID); err == nil {
+			t.Fatalf("close accepted %x", flowID)
+		}
 	}
 }

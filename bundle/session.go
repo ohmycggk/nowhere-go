@@ -264,26 +264,16 @@ func (b *CarrierBundle) PoolTarget() int { return b.cfg.poolSize }
 // ErrFlowIDExhausted is returned after a bundle has allocated every nonzero flow ID.
 var ErrFlowIDExhausted = errors.New("nowhere: flow id space exhausted")
 
-// allocFlowID returns the next nonzero uint32 flow id, skipping zero on wrap
-// and failing once every nonzero value has been handed out (full u32 cycle).
-// The monotonic counter is sufficient because flow ids are never reused within
-// an active bundle's lifetime; pending/active tracking lives at the
-// session/carrier layer where flows are paired and released.
+// allocFlowID returns the next flow id in 1..=wire.MaxFlowID. A bundle that
+// issues the entire 30-bit space is treated as exhausted rather than reusing
+// IDs still held by live flows.
 func (b *CarrierBundle) allocFlowID() (wire.FlowID, error) {
 	for {
 		next := b.nextFlowID.Load()
-		if next == 0 {
-			// Should never happen: initialized to 1; treated as exhaustion.
+		if next == 0 || next > wire.MaxFlowID {
 			return 0, ErrFlowIDExhausted
 		}
-		cand := next + 1
-		if cand == 0 {
-			// Wrapped past maxuint32: the next valid id is 1. If 1 is already
-			// back in circulation this would collide, but a bundle that issues
-			// 2^32-1 flows is treated as exhausted instead.
-			return 0, ErrFlowIDExhausted
-		}
-		if b.nextFlowID.CompareAndSwap(next, cand) {
+		if b.nextFlowID.CompareAndSwap(next, next+1) {
 			return next, nil
 		}
 	}

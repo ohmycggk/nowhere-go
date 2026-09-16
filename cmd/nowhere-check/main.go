@@ -1,5 +1,5 @@
-// Command nowhere-check prints version info and optionally validates wire
-// conformance vectors. It is a local/CI self-check helper, not a release artifact.
+// Command nowhere-check prints version info and validates wire conformance
+// vectors. Release builds ship Linux, Windows, and macOS binaries.
 package main
 
 import (
@@ -111,7 +111,7 @@ func runSelfCheck() error {
 	if _, err := wire.ValidateAuthFrame(authFrame[:], creds, wire.AuthTransportTLSTCP, exporter); err != nil {
 		return err
 	}
-	header, err := wire.StreamMuxHeader(0x01020304, wire.MuxFlagSYN, 0x0506)
+	header, err := wire.OpenMuxHeader(0x01020304, 0x0506)
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func runSelfCheck() error {
 	if err != nil {
 		return err
 	}
-	want := [wire.MuxHeaderLen]byte{1, wire.MuxFlagSYN, 0x05, 0x06, 1, 2, 3, 4}
+	want := [wire.MuxHeaderLen]byte{1, 5, 6, 1, 2, 3, 4}
 	if encoded != want {
 		return fmt.Errorf("mux header vector mismatch")
 	}

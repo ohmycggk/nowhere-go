@@ -574,6 +574,12 @@ func prepare(ctx context.Context, cfg *Config) (net.Conn, wire.TLSExporter, *car
 		logOpenTiming(cfg, "warm_prepare_failed", 0, ci.id, stage, "tcp", target, timing)
 		return nil, wire.TLSExporter{}, nil, err
 	}
+	raw, err = wrapMorphClient(cfg, raw)
+	if err != nil {
+		ci.transition(stateClosed)
+		logOpenTiming(cfg, "warm_prepare_failed", 0, ci.id, stage, "tcp", target, timing)
+		return nil, wire.TLSExporter{}, nil, err
+	}
 	tuneNowhereTCPConn(cfg, raw, ci.id, stage)
 	tlsStart := time.Now()
 	handshaked, err := cfg.tlsDialer.DialTLSConn(ctx, raw)

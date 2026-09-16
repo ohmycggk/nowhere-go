@@ -62,14 +62,18 @@ func buildMuxHeader(tc vectors.MuxCase) (wire.MuxHeader, error) {
 	}
 	var kind wire.MuxFrameKind
 	switch tc.Kind {
-	case "stream":
-		kind = wire.MuxFrameStream
+	case "open":
+		kind = wire.MuxFrameOpen
+	case "data":
+		kind = wire.MuxFrameData
 	case "window":
 		kind = wire.MuxFrameWindow
-	case "datagram":
-		kind = wire.MuxFrameDatagram
+	case "fin":
+		kind = wire.MuxFrameFin
+	case "reset":
+		kind = wire.MuxFrameReset
 	default:
 		return wire.MuxHeader{}, fmt.Errorf("unknown mux kind %q", tc.Kind)
 	}
-	return wire.MuxHeader{Kind: kind, Flags: tc.Flags, Value: tc.Value, FlowID: uint32(flowID)}, nil
+	return wire.MuxHeader{Kind: kind, Value: tc.Value, FlowID: uint32(flowID)}, nil
 }

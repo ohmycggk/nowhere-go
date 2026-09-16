@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ohmycggk/nowhere-go/carrier/morph"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
@@ -25,10 +26,10 @@ const (
 )
 
 const (
-	// DefaultPendingFlowsPerSession limits unresolved flows in one authenticated session.
-	DefaultPendingFlowsPerSession = 1024
-	// DefaultUDPFlowsPerSession limits UDP flows shared by QUIC and UoT.
-	DefaultUDPFlowsPerSession = 256
+	// DefaultPendingFlowsPerSession is the per-session claim ceiling (active or pending).
+	DefaultPendingFlowsPerSession = 4096
+	// DefaultUDPFlowsPerSession is retained as a UDP route budget; 2.0 has no separate application UDP quota.
+	DefaultUDPFlowsPerSession = 4096
 	// DefaultUDPQueueBytes is the shared datagram queue byte budget per session.
 	DefaultUDPQueueBytes = 4 * 1024 * 1024
 	// DefaultUDPQueuePackets limits queued datagrams per flow.
@@ -37,6 +38,8 @@ const (
 	DefaultActiveQUICSessions = 1024
 	// DefaultAuthenticatedTCPIdleConnections limits authenticated TCP halves awaiting use.
 	DefaultAuthenticatedTCPIdleConnections = 4096
+	// DefaultPortalClaims is the pairing-registry admission ceiling.
+	DefaultPortalClaims = 65536
 )
 
 // Network selects a Portal ingress carrier.
@@ -101,6 +104,8 @@ type ConfigOptions struct {
 	Timeouts Timeouts
 	// Limits overrides server resource defaults.
 	Limits Limits
+	// MorphSharedKey enables Morph on accepted TCP carriers when non-empty.
+	MorphSharedKey []byte
 }
 
 // Config is normalized and immutable after construction.
@@ -112,6 +117,7 @@ type Config struct {
 	enableUDP   bool
 	timeouts    Timeouts
 	limits      Limits
+	morph       *morph.Keys
 }
 
 // NewConfig validates and normalizes server configuration.
@@ -156,6 +162,10 @@ func NewConfig(options ConfigOptions) (*Config, error) {
 		default:
 			return nil, fmt.Errorf("%w: unsupported network %q", ErrInvalidConfig, network)
 		}
+	}
+	if len(options.MorphSharedKey) > 0 {
+		keys := morph.Derive(options.MorphSharedKey)
+		cfg.morph = &keys
 	}
 	return cfg, nil
 }

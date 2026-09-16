@@ -359,6 +359,21 @@ func (r *claimRegistry) Submit(ctx context.Context, claim flowClaim) (*claimedFl
 		claim.close(ErrDraining)
 		return nil, ErrDraining
 	}
+	sessionClaims := 0
+	for existing := range r.entries {
+		if existing.sessionID == claim.SessionID {
+			sessionClaims++
+		}
+	}
+	if sessionClaims >= r.limits.PendingFlowsPerSession || len(r.entries) >= DefaultPortalClaims {
+		r.mu.Unlock()
+		err := fmt.Errorf("%w: claim admission", ErrPairLimit)
+		if result := setupResultForClaim(claim); result != nil {
+			_ = result.reject(wire.SetupResultFlowLimit)
+		}
+		claim.close(err)
+		return nil, err
+	}
 	generation := r.generations[claim.SessionID]
 	if generation == 0 && !claim.BoundGeneration {
 		generation = claim.Generation

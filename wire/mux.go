@@ -12,56 +12,60 @@ import (
 const MuxMarker byte = 0xff
 
 // MuxHeaderLen is the fixed Mux frame header length.
-const MuxHeaderLen = 8
-
-// STREAM flag bits. WINDOW and DATAGRAM require flags=0.
-const (
-	MuxFlagSYN byte = 0x01
-	MuxFlagFIN byte = 0x02
-	MuxFlagRST byte = 0x04
-)
-
-const muxStreamFlagMask = MuxFlagSYN | MuxFlagFIN | MuxFlagRST
+const MuxHeaderLen = 7
 
 // MuxFrameKind is the MuxHeader kind byte.
 type MuxFrameKind uint8
 
 const (
-	// MuxFrameStream carries optional payload for one logical stream.
-	MuxFrameStream MuxFrameKind = 0x01
-	// MuxFrameWindow returns byte credit. flow_id 0 is connection-wide.
-	MuxFrameWindow MuxFrameKind = 0x02
-	// MuxFrameDatagram is recognized by the codec but is not a runtime plane.
-	MuxFrameDatagram MuxFrameKind = 0x03
+	// MuxFrameOpen opens a logical stream and advertises receive-window extension
+	// in 1 KiB units.
+	MuxFrameOpen MuxFrameKind = 0x01
+	// MuxFrameData carries a non-empty payload for one logical stream.
+	MuxFrameData MuxFrameKind = 0x02
+	// MuxFrameWindow returns credit in 1 KiB units. flow_id 0 is connection-wide.
+	MuxFrameWindow MuxFrameKind = 0x03
+	// MuxFrameFin half-closes a logical stream.
+	MuxFrameFin MuxFrameKind = 0x04
+	// MuxFrameReset immediately removes a logical stream.
+	MuxFrameReset MuxFrameKind = 0x05
 )
 
-// MuxHeader is the 8-byte Mux frame header.
+// MuxHeader is the 7-byte Mux frame header.
 type MuxHeader struct {
 	Kind   MuxFrameKind
-	Flags  byte
 	Value  uint16
 	FlowID FlowID
 }
 
-// Validate enforces kind, flag, flow-id, and value invariants.
+// Validate enforces kind, flow-id, and value invariants.
 func (h MuxHeader) Validate() error {
 	switch h.Kind {
-	case MuxFrameStream:
-		if h.FlowID == 0 {
-			return ErrInvalidMuxHeader
+	case MuxFrameOpen:
+		if err := requireMuxFlowID(h.FlowID); err != nil {
+			return err
 		}
-		if h.Flags&^muxStreamFlagMask != 0 {
-			return ErrInvalidMuxHeader
+	case MuxFrameData:
+		if err := requireMuxFlowID(h.FlowID); err != nil {
+			return err
 		}
-		if h.Flags&MuxFlagRST != 0 && (h.Flags != MuxFlagRST || h.Value != 0) {
+		if h.Value == 0 {
 			return ErrInvalidMuxHeader
 		}
 	case MuxFrameWindow:
-		if h.Flags != 0 || h.Value == 0 {
+		if h.Value == 0 {
 			return ErrInvalidMuxHeader
 		}
-	case MuxFrameDatagram:
-		if h.FlowID == 0 || h.Flags != 0 {
+		if h.FlowID != 0 {
+			if err := requireMuxFlowID(h.FlowID); err != nil {
+				return err
+			}
+		}
+	case MuxFrameFin, MuxFrameReset:
+		if err := requireMuxFlowID(h.FlowID); err != nil {
+			return err
+		}
+		if h.Value != 0 {
 			return ErrInvalidMuxHeader
 		}
 	default:
@@ -70,65 +74,72 @@ func (h MuxHeader) Validate() error {
 	return nil
 }
 
-// StreamMuxHeader builds a STREAM header.
-func StreamMuxHeader(flowID FlowID, flags byte, payloadLen int) (MuxHeader, error) {
-	if payloadLen < 0 || payloadLen > 0xffff {
-		return MuxHeader{}, errors.New("nowhere: mux frame value exceeds u16")
+func requireMuxFlowID(flowID FlowID) error {
+	if flowID == 0 || flowID > MaxFlowID {
+		return ErrInvalidMuxHeader
 	}
-	header := MuxHeader{Kind: MuxFrameStream, Flags: flags, Value: uint16(payloadLen), FlowID: flowID}
-	if err := header.Validate(); err != nil {
-		return MuxHeader{}, err
-	}
-	return header, nil
+	return nil
 }
 
-// WindowMuxHeader builds a WINDOW header. flowID 0 replenishes connection credit.
+// OpenMuxHeader builds an OPEN header. extension is the opener receive-window
+// extension in 1 KiB units and may be zero.
+func OpenMuxHeader(flowID FlowID, extension int) (MuxHeader, error) {
+	return newMuxHeader(MuxFrameOpen, extension, flowID)
+}
+
+// DataMuxHeader builds a DATA header. payloadLen must be 1..65535.
+func DataMuxHeader(flowID FlowID, payloadLen int) (MuxHeader, error) {
+	return newMuxHeader(MuxFrameData, payloadLen, flowID)
+}
+
+// WindowMuxHeader builds a WINDOW header. credit is in 1 KiB units and must be
+// nonzero. flowID 0 replenishes connection credit.
 func WindowMuxHeader(flowID FlowID, credit int) (MuxHeader, error) {
-	if credit <= 0 || credit > 0xffff {
-		return MuxHeader{}, errors.New("nowhere: mux window credit out of range")
-	}
-	header := MuxHeader{Kind: MuxFrameWindow, Value: uint16(credit), FlowID: flowID}
-	if err := header.Validate(); err != nil {
-		return MuxHeader{}, err
-	}
-	return header, nil
+	return newMuxHeader(MuxFrameWindow, credit, flowID)
 }
 
-// DatagramMuxHeader builds a DATAGRAM header. The runtime rejects this kind.
-func DatagramMuxHeader(flowID FlowID, payloadLen int) (MuxHeader, error) {
-	if payloadLen < 0 || payloadLen > 0xffff {
+// FinMuxHeader builds a FIN header.
+func FinMuxHeader(flowID FlowID) (MuxHeader, error) {
+	return newMuxHeader(MuxFrameFin, 0, flowID)
+}
+
+// ResetMuxHeader builds a RESET header.
+func ResetMuxHeader(flowID FlowID) (MuxHeader, error) {
+	return newMuxHeader(MuxFrameReset, 0, flowID)
+}
+
+func newMuxHeader(kind MuxFrameKind, value int, flowID FlowID) (MuxHeader, error) {
+	if value < 0 || value > 0xffff {
 		return MuxHeader{}, errors.New("nowhere: mux frame value exceeds u16")
 	}
-	header := MuxHeader{Kind: MuxFrameDatagram, Value: uint16(payloadLen), FlowID: flowID}
+	header := MuxHeader{Kind: kind, Value: uint16(value), FlowID: flowID}
 	if err := header.Validate(); err != nil {
 		return MuxHeader{}, err
 	}
 	return header, nil
 }
 
-// EncodeMuxHeader writes one validated 8-byte header.
+// EncodeMuxHeader writes one validated 7-byte header.
 func EncodeMuxHeader(h MuxHeader) ([MuxHeaderLen]byte, error) {
 	if err := h.Validate(); err != nil {
 		return [MuxHeaderLen]byte{}, err
 	}
 	var out [MuxHeaderLen]byte
 	out[0] = byte(h.Kind)
-	out[1] = h.Flags
-	binary.BigEndian.PutUint16(out[2:4], h.Value)
-	encodeUint32BE(out[4:], h.FlowID)
+	binary.BigEndian.PutUint16(out[1:3], h.Value)
+	encodeUint32BE(out[3:], h.FlowID)
 	return out, nil
 }
 
-// DecodeMuxHeader decodes exactly one 8-byte header.
+// DecodeMuxHeader decodes exactly one 7-byte header.
 func DecodeMuxHeader(b []byte) (MuxHeader, error) {
 	if len(b) != MuxHeaderLen {
 		return MuxHeader{}, ErrInvalidMuxHeader
 	}
 	header := MuxHeader{
 		Kind:   MuxFrameKind(b[0]),
-		Flags:  b[1],
-		Value:  binary.BigEndian.Uint16(b[2:4]),
-		FlowID: decodeUint32BE(b[4:]),
+		Value:  binary.BigEndian.Uint16(b[1:3]),
+		FlowID: decodeUint32BE(b[3:]),
 	}
 	if err := header.Validate(); err != nil {
 		return MuxHeader{}, ErrInvalidMuxHeader
@@ -147,10 +158,8 @@ func ReadMuxHeader(r io.Reader) (MuxHeader, error) {
 
 // MuxPayloadLen is the number of bytes that follow a header on the wire.
 func MuxPayloadLen(h MuxHeader) int {
-	switch h.Kind {
-	case MuxFrameStream, MuxFrameDatagram:
+	if h.Kind == MuxFrameData {
 		return int(h.Value)
-	default:
-		return 0
 	}
+	return 0
 }

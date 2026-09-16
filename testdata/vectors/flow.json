@@ -1,5 +1,5 @@
 {
-  "protocol": "nowhere-v1",
+  "protocol": "nowhere-v2",
   "source": {
     "rust": "Nowhere/src/tests/protocol/flow.rs"
   },
@@ -56,11 +56,11 @@
       "operation": "flow_header",
       "valid": true,
       "role": "duplex",
-      "flow_id": "4294967295",
+      "flow_id": "1073741823",
       "kind": "tcp",
       "uplink": "quic",
       "downlink": "quic",
-      "frame_hex": "18ffffffff"
+      "frame_hex": "183fffffff"
     },
     {
       "id": "max-hops-duplex-tcp-tls-tls",
@@ -79,12 +79,12 @@
       "operation": "flow_header",
       "valid": true,
       "role": "open",
-      "flow_id": "4294967295",
+      "flow_id": "1073741823",
       "kind": "udp",
       "uplink": "tls_tcp",
       "downlink": "quic",
       "hops": 3,
-      "frame_hex": "75ffffffff"
+      "frame_hex": "753fffffff"
     },
     {
       "id": "hops-6-attach-udp-quic-tls",
@@ -147,6 +147,20 @@
       "valid": false,
       "frame_hex": "0000000000",
       "error_code": "zero_flow_id"
+    },
+    {
+      "id": "overflow-flow-id",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "0040000000",
+      "error_code": "flow_id_out_of_range"
+    },
+    {
+      "id": "u32-max-flow-id",
+      "operation": "flow_header",
+      "valid": false,
+      "frame_hex": "00ffffffff",
+      "error_code": "flow_id_out_of_range"
     }
   ]
 }

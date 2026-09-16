@@ -1,5 +1,5 @@
 {
-  "protocol": "nowhere-v1",
+  "protocol": "nowhere-v2",
   "source": {
     "rust": "Nowhere/src/tests/protocol/result.rs::every_result_has_one_stable_wire_byte"
   },

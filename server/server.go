@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/ohmycggk/nowhere-go/carrier/morph"
 	"github.com/ohmycggk/nowhere-go/diagnostic"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
@@ -178,6 +179,9 @@ func (s *Server) serveTCP(ctx context.Context, listener net.Listener) error {
 			}
 		}
 		go func(raw net.Conn) {
+			if s.config != nil && s.config.morph != nil {
+				raw = morph.WrapTCPServer(raw, *s.config.morph)
+			}
 			_ = s.handler.ServeTCP(ctx, raw, raw.RemoteAddr(), s.tlsHandshake, nil)
 		}(conn)
 	}

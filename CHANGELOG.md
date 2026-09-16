@@ -5,56 +5,49 @@ project follows semantic versioning for its Go API, while protocol
 compatibility is also tied to the explicit Nowhere version named in each
 release.
 
-Because the module is still pre-1.0, preview releases may contain breaking Go
-API changes. A wire-protocol baseline change requires a lockstep upgrade of the
-Rust Portal and all clients.
+A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
+and all clients.
 
 ## Unreleased
 
+### Added
+
+- Portal SOCKS5 outbound (`portal://...?socks=host:port`) for TCP CONNECT and
+  UDP ASSOCIATE. There is no direct fallback; `socks` and `next` stay mutually
+  exclusive.
+
+## v2.0.0 - 2026-09-16
+
 ### Changed
 
-- Align the protocol oracle, FLOW vectors, Mux codec, and lock metadata with
-  Nowhere v1.8.3 at upstream commit `7041032b346d713f3c6bf25db9e3d7b2a41e1315`.
-  The 1.8.3 data plane is identical to 1.8.2; mix is a client-side route policy.
-- Canonicalize `udp/udp&mux=1` to `mux=0`, matching Nowhere 1.8.3. Mux still
-  applies when either direction is `tcp` or `mix`.
-
-- Tighten Mux shard density from 12 to 4 active flows, matching Nowhere 1.8.1.
-  QUIC flow-control remains host-injected; the Rust binary now defaults
-  `NOW_QUIC_MEMORY_PROFILE` to `throughput`.
-- Accept OPEN/ATTACH FlowHeaders whose uplink and downlink carriers are equal,
-  matching the 1.8 decoder. Vector-originated equal-carrier flows still use
-  DUPLEX.
-- Preserve inbound `FlowInfo` (including HOPS) when a transferable transport
-  is claimed as a route task.
+- Align the protocol oracle, vectors, Mux engine, and lock metadata with
+  Nowhere v2.0.0 at upstream commit `0453efd28659468a4be5cccc7a16d1cd67bbb1ff`.
+  The sole ALPN is `nw2`. 1.8 `now/1` peers cannot complete a handshake.
+- Derive AuthFrame keys from salt `nowhere/nw2/auth-root`.
+- Constrain flow IDs to `1..=0x3fffffff` on FlowHeader, Mux, and QUIC UDP.
+- Replace the 8-byte STREAM/WINDOW/DATAGRAM Mux header with the 7-byte
+  OPEN/DATA/WINDOW/FIN/RESET layout. WINDOW/OPEN values are 1 KiB units.
+- Pack QUIC UDP DATA/CLOSE into 4-byte headers and FRAGMENT into 12 bytes.
+- Default Mux windows to 16/32 MiB with a 4,096-stream resource ceiling.
+- Share at most eight full-duplex Mux TLS carriers per session and place
+  flows by occupancy instead of a 4-stream shard density.
+- Raise Portal claim admission to 4,096 per session and 65,536 globally.
 
 ### Added
 
-- Add client `mix` policy (`BundleOptions.MixUp` / `MixDown`) with the 3×3
-  `tcp|udp|mix` matrix, `mix/mix` → TT or QQ only, and one pre-commit fallback
-  within `DefaultMixFallbackTimeout` (1s). Starting a FlowHeader or Target write
-  commits the flow; READY and payload failures do not fall back.
-- Enforce the mix preparation budget even when a carrier operation returns
-  late, make Mux shard serialization context-aware, and discard every late
-  primary-route lane before it can be used.
-- Pre-register QUIC UDP downlinks before FlowHeader commit for fixed and mixed
-  routes, activate them only after READY, and surface registration failures
-  synchronously instead of returning an unusable PacketConn.
-- Implement the Nowhere 1.8 TLS Mux wire (0xff marker, 8-byte MuxHeader,
-  STREAM/WINDOW/DATAGRAM) and the credit-windowed stream engine in
-  `carrier/mux`.
-- Auto-detect dedicated vs marked Mux TLS after AuthFrame on inbound
-  `Handler.ServeTCP`. Portal remains optionless.
-- Add `bundle.BundleOptions.Mux` (`0` dedicated, `1` shards). Mux shards open
-  lazily at 4 active flows per direction, idle-close after 30s, and never
-  reuse the dedicated warm pool. `PoolSize` must be zero when Mux is enabled.
-- Export Mux header vectors derived from `Nowhere/src/tests/mux/wire.rs`.
+- Add the Morph socket transform (`carrier/morph`) with HKDF-SHA256 keys and
+  ChaCha20-XOR wrappers for TCP and UDP. Enable it with `TCPOptions.MorphSharedKey`
+  and `server.ConfigOptions.MorphSharedKey`.
+- Add a standalone `nowhere` Portal/Vector CLI (`cmd/nowhere`) that speaks
+  `portal://` and `vector://` URLs, including TLS, QUIC, Morph, mix/mux, SOCKS5,
+  and native `next` chaining.
+- Publish `nowhere` and `nowhere-check` Linux, Windows, and macOS binaries from
+  GitHub Actions on `v*.*.*` tags (`make dist`).
 
 ### Documentation
 
-- Document 1.8 Mux auto-detect, client `mux=0|1`, OPEN/ATTACH equal-carrier
-  decoding, and the 1.8.3 mix policy with pre-commit fallback. Dedicated mux=0
-  envelopes remain the 1.7 TLS lane.
+- Document the nw2 ALPN, 7-byte Mux frames, packed QUIC UDP headers, 30-bit
+  flow IDs, occupancy Mux pool, Morph shared-key option, and release artifacts.
 
 ## v1.7.0 - 2026-08-12
 

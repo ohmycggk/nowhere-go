@@ -5,6 +5,7 @@
 *.test
 *.out
 /nowhere-check
+/nowhere
 
 # Coverage / profiling
 coverage.out

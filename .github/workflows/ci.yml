@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, test]
+    tags: ["v*.*.*"]
   pull_request:
   workflow_dispatch:
 
@@ -37,6 +38,13 @@ jobs:
         run: go build -o /tmp/nowhere-check ./cmd/nowhere-check
       - name: Run nowhere-check
         run: /tmp/nowhere-check
+      - name: Test and build Portal/Vector CLI
+        run: |
+          cd cmd/nowhere
+          GOWORK=off go test ./...
+          GOWORK=off go build -o /tmp/nowhere .
+      - name: nowhere CLI help
+        run: /tmp/nowhere -h
 
   staticcheck:
     name: staticcheck

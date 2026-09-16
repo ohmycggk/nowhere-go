@@ -15,7 +15,7 @@ type TLSHandshakeInfo struct {
 	Exporter       TLSExporter
 }
 
-// Validate checks the v1 TLS 1.3 and exact single-ALPN requirements.
+// Validate checks the nw2 TLS 1.3 and exact single-ALPN requirements.
 func (i TLSHandshakeInfo) Validate(expectedALPN string) error {
 	alpn, err := NormalizeALPN(expectedALPN)
 	if err != nil {

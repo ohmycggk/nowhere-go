@@ -10,7 +10,7 @@ import (
 func TestDeriveAuthKeyMatchesFixedVector(t *testing.T) {
 	// Mirror of auth.rs::hkdf_and_auth_frames_match_fixed_vectors.
 	key := DeriveAuthKey([]byte("secret"))
-	want, _ := hex.DecodeString("1076221669fa28bcf70aa8545bddd6f760dcefbe279c3f38a5ff5d925708f867")
+	want, _ := hex.DecodeString("8de7e08dd22134ac5acc57902658a36b7f6f9d219987ed49b934a7529a4d24c5")
 	if !bytes.Equal(key[:], want) {
 		t.Fatalf("auth key mismatch\n got %x\nwant %x", key[:], want)
 	}
@@ -48,8 +48,8 @@ func TestAuthFrameRoundTripAndReplayProtection(t *testing.T) {
 		transport AuthTransport
 		wantHex   string
 	}{
-		{"tls_tcp", AuthTransportTLSTCP, "000102030405060708090a0b0c0d0e0f24a4c0d5f8946b65bcf270ed6e1c3dec"},
-		{"quic", AuthTransportQUIC, "000102030405060708090a0b0c0d0e0f8176b984db64a1e2c811e751d955b635"},
+		{"tls_tcp", AuthTransportTLSTCP, "000102030405060708090a0b0c0d0e0f91f3033378b001f0de171717c027be00"},
+		{"quic", AuthTransportQUIC, "000102030405060708090a0b0c0d0e0f97d0be56bda8a0ee7596775b35efbf68"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			frame, err := EncodeAuthFrame(creds, tc.transport, exporter, sessionID)
@@ -73,7 +73,6 @@ func TestAuthFrameRoundTripAndReplayProtection(t *testing.T) {
 		})
 	}
 
-	// Replay on a different exporter must fail.
 	frame, err := EncodeAuthFrame(creds, AuthTransportQUIC, exporter, sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -83,11 +82,9 @@ func TestAuthFrameRoundTripAndReplayProtection(t *testing.T) {
 	if _, err := ValidateAuthFrame(frame[:], creds, AuthTransportQUIC, other); err == nil {
 		t.Fatal("replay on different exporter accepted")
 	}
-	// Replay on a different transport must fail.
 	if _, err := ValidateAuthFrame(frame[:], creds, AuthTransportTLSTCP, exporter); err == nil {
 		t.Fatal("replay on different transport accepted")
 	}
-	// Wrong key must fail.
 	otherCreds, _ := NewCredentials("other")
 	if _, err := ValidateAuthFrame(frame[:], otherCreds, AuthTransportQUIC, exporter); err == nil {
 		t.Fatal("replay with wrong key accepted")

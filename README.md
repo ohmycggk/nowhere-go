@@ -1,6 +1,6 @@
 # Nowhere-Go
 
-Go implementation of the [Nowhere](https://github.com/NodePassProject/Nowhere) v1 protocol — both **outbound** (client) and **inbound** (server). The exact upstream version, commit, protocol hash, and vector-tree hash are canonicalized in [`UPSTREAM.lock`](UPSTREAM.lock).
+Go implementation of the [Nowhere](https://github.com/NodePassProject/Nowhere) v2 (`nw2`) protocol — both **outbound** (client) and **inbound** (server). The exact upstream version, commit, protocol hash, and vector-tree hash are canonicalized in [`UPSTREAM.lock`](UPSTREAM.lock).
 
 This is a library, not a standalone proxy. Hosts such as [sing-box](https://github.com/SagerNet/sing-box) or [mihomo](https://github.com/MetaCubeX/mihomo) import it and supply platform pieces: TLS material, dialers, QUIC stacks, and routing.
 
@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 1.5–1.7 share the same authentication, targets, setup results, UoT, and DATAGRAM formats. 1.7 assigned the FLOW header's high three bits to HOPS. Nowhere 1.8 keeps that data plane and adds TLS Mux: after AuthFrame, `0xff` selects Mux frames and any other byte is dedicated FlowHeader. Dedicated `mux=0` clients still interoperate with 1.8 Portal. OPEN/ATTACH may name equal carriers; Vector still emits DUPLEX when both directions match. Nowhere 1.8.3 adds a client-only `mix` policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. The 1.4 data plane remains incompatible.
+> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Mix remains a client-side policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. Optional `morph=1` sits below TLS/QUIC with no negotiation. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
 
 ---
 
@@ -43,10 +43,11 @@ Hosts keep:
 
 ```text
 nowhere-go/
-├── wire/                       # shared 1.8 codec, credentials, HOPS, Mux, and typed targets
+├── wire/                       # shared nw2 codec, credentials, HOPS, Mux, and typed targets
 ├── carrier/
-│   ├── tcptls/                 # TLS/TCP pool and Mux shards (TCPDialer / TLSDialer injected)
-│   ├── mux/                    # TLS Mux stream engine (STREAM/WINDOW credit)
+│   ├── tcptls/                 # TLS/TCP pool and Mux pool (TCPDialer / TLSDialer injected)
+│   ├── mux/                    # TLS Mux stream engine (OPEN/DATA/WINDOW KiB credit)
+│   ├── morph/                  # optional ChaCha20 socket transform below TLS/QUIC
 │   └── quic/                   # outbound QuicBackend interfaces (no implementation)
 ├── bundle/                     # outbound CarrierBundle (up/down = tcp|udp)
 ├── server/                     # inbound Server / Handler / Upstream
@@ -275,7 +276,7 @@ go work init ./nowhere-go ./sing-box ./sing-box/test ./mihomo ./mihomo/test
 # or: go work use ./nowhere-go ./sing-box ...
 ```
 
-Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 1.8 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
+Host `go.mod` keeps only a published `nowhere-go` version that targets the same Nowhere 2 protocol baseline. Push/CI resolve that module; local edits to `nowhere-go/` are picked up via `go.work`.
 
 Temporarily ignore the workspace:
 
@@ -296,8 +297,19 @@ go run ./cmd/nowhere-check            # wire vectors + self-check
 go run ./cmd/nowhere-check -version
 ```
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.24.x / stable** on push (`main`/`test`), PR, and `workflow_dispatch`. No release binaries are published — consume the module with `go get`.
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.24.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`.
+
+The standalone **Portal / Vector** binary lives in [`cmd/nowhere`](cmd/nowhere). It accepts the same `portal://` and `vector://` URLs as the Rust `nowhere` CLI (TUI is not included).
 
 ```bash
-go get github.com/ohmycggk/nowhere-go@latest
+make nowhere
+./nowhere 'portal://secret@:2000?log=info'
+./nowhere 'vector://secret@127.0.0.1:2000?up=tcp&down=tcp&socks=127.0.0.1:1080'
+```
+
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` and `nowhere-check` binaries for Linux, Windows, and macOS (`amd64` and `arm64`) plus `SHA256SUMS`. Reproduce locally with `make dist`. Consume the library with `go get`.
+
+```bash
+go get github.com/ohmycggk/nowhere-go@v2.0.0
+make dist VERSION=v2.0.0
 ```

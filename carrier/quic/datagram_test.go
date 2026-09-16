@@ -158,7 +158,7 @@ func TestDatagramProberNilCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if probedSize != 105 || len(frames) != 1 {
-		t.Fatalf("probedSize=%d frames=%d, want probe frame 105/1", probedSize, len(frames))
+	if probedSize != 100+wire.UDPHeaderLen || len(frames) != 1 {
+		t.Fatalf("probedSize=%d frames=%d, want probe frame (100+header)/1", probedSize, len(frames))
 	}
 }

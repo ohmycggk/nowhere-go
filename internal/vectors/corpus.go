@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-// AuthCase is one 1.5 connection-bound authentication vector.
+// AuthCase is one nw2 connection-bound authentication vector.
 type AuthCase struct {
 	ID           string `json:"id"`
 	SharedKey    string `json:"shared_key"`

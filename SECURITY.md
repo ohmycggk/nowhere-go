@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest release in the **v0.5 preview**
-series. The current development baseline is recorded in `UPSTREAM.lock`.
-The v0.4 and older preview lines are unsupported after host adapters migrate.
+Security fixes are provided for the latest release in the **v2.0** line, which
+tracks Nowhere 2 (`nw2`). The current development baseline is recorded in
+`UPSTREAM.lock`. The v1.8 and older lines are unsupported after host adapters
+migrate.
 
-`nowhere-go` is pre-1.0 software. Hosts must pin an explicit tagged release and
-upgrade the Rust Portal and every Nowhere client together when the documented
-protocol baseline changes.
+Hosts must pin an explicit tagged release and upgrade the Rust Portal and every
+Nowhere client together when the documented protocol baseline changes.
 
 ## Reporting
 

@@ -2,7 +2,7 @@ package wire
 
 import "errors"
 
-// Codec errors. They are intentionally coarse: Nowhere 1.5 closes a connection
+// Codec errors. They are intentionally coarse: Nowhere 2 closes a connection
 // on any protocol violation and never distinguishes failure causes to the peer.
 var (
 	ErrInvalidTarget        = errors.New("nowhere: invalid target address")

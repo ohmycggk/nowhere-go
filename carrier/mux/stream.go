@@ -159,7 +159,7 @@ func (st *Stream) CloseWrite() error {
 	}
 	st.writeClosed = true
 	st.terminalSent = true
-	header, err := wire.StreamMuxHeader(st.flowID, wire.MuxFlagFIN, 0)
+	header, err := wire.FinMuxHeader(st.flowID)
 	if err != nil {
 		st.shared.releasePart(st.flowID)
 		return err

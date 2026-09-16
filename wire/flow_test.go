@@ -59,12 +59,14 @@ func TestFlowHeaderFixedVectors(t *testing.T) {
 
 func TestFlowHeaderRejectsInvalid(t *testing.T) {
 	invalids := [][]byte{
-		{},                 // empty
-		{0, 0, 0, 0},       // short
-		{0, 0, 0, 0, 0, 0}, // long
-		{0, 0, 0, 0, 0},    // zero flow id
-		{0x03, 0, 0, 0, 1}, // invalid role
-		{0x10, 0, 0, 0, 1}, // duplex carrier mismatch
+		{},                          // empty
+		{0, 0, 0, 0},                // short
+		{0, 0, 0, 0, 0, 0},          // long
+		{0, 0, 0, 0, 0},             // zero flow id
+		{0x03, 0, 0, 0, 1},          // invalid role
+		{0x10, 0, 0, 0, 1},          // duplex carrier mismatch
+		{0, 0x40, 0, 0, 0},          // flow id exceeds 30 bits
+		{0, 0xff, 0xff, 0xff, 0xff}, // u32 max
 	}
 	for _, frame := range invalids {
 		if _, err := DecodeFlowHeader(frame); err == nil {
@@ -145,7 +147,7 @@ func TestFlowHeaderValidateOnCarrier(t *testing.T) {
 }
 
 func TestFlowHeaderMaxFlowIDRoundTrips(t *testing.T) {
-	header := FlowHeader{Role: FlowRoleDuplex, FlowID: 0xffffffff, Kind: FlowKindTCP, Uplink: CarrierQUIC, Downlink: CarrierQUIC}
+	header := FlowHeader{Role: FlowRoleDuplex, FlowID: MaxFlowID, Kind: FlowKindTCP, Uplink: CarrierQUIC, Downlink: CarrierQUIC}
 	encoded, err := WriteFlowHeader(header)
 	if err != nil {
 		t.Fatalf("encode: %v", err)

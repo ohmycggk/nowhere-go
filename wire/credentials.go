@@ -20,7 +20,7 @@ type AuthKey = [AuthKeyLen]byte
 const MaxSharedKeyLen = 255
 
 // authRootSaltLabel is the HKDF-Extract salt label: salt = SHA-256(label).
-const authRootSaltLabel = "nowhere/now/1/auth-root"
+const authRootSaltLabel = "nowhere/nw2/auth-root"
 
 // authKeyInfo is the HKDF-Expand info label for the authentication key.
 const authKeyInfo = "authentication"
@@ -57,9 +57,9 @@ func (c *Credentials) authKeyBytes() AuthKey {
 }
 
 // DeriveAuthKey derives the connection-independent authentication key with
-// HKDF-SHA256 per the Nowhere 1.5 spec:
+// HKDF-SHA256 per the Nowhere 2 spec:
 //
-//	salt      = SHA-256("nowhere/now/1/auth-root")
+//	salt      = SHA-256("nowhere/nw2/auth-root")
 //	auth_root = HKDF-Extract-SHA256(salt, shared_key)
 //	auth_key  = HKDF-Expand-SHA256(auth_root, "authentication", 32)
 //

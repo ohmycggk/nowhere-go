@@ -188,8 +188,13 @@ func (p *TCPPool) prepareFresh(ctx context.Context, target wire.Target, header w
 		logOpenTiming(p.cfg, "fresh_failed", header.FlowID, ci.id, stage, network, targetString(target), timing)
 		return nil, err
 	}
+	raw, err = wrapMorphClient(p.cfg, raw)
+	if err != nil {
+		ci.transition(stateClosed)
+		logOpenTiming(p.cfg, "fresh_failed", header.FlowID, ci.id, stage, network, targetString(target), timing)
+		return nil, err
+	}
 	tuneNowhereTCPConn(p.cfg, raw, ci.id, stage)
-
 	tlsStart := time.Now()
 	handshaked, err := p.cfg.tlsDialer.DialTLSConn(ctx, raw)
 	timing.tlsHandshake = time.Since(tlsStart)

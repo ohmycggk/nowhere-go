@@ -31,75 +31,101 @@ func (s *shared) readLoop(r io.Reader) error {
 			}
 		}
 		switch header.Kind {
-		case wire.MuxFrameStream:
-			if err := s.receiveStream(header, payload); err != nil {
+		case wire.MuxFrameOpen:
+			if err := s.receiveOpen(header); err != nil {
+				return err
+			}
+		case wire.MuxFrameData:
+			if err := s.receiveData(header, payload); err != nil {
 				return err
 			}
 		case wire.MuxFrameWindow:
 			if err := s.receiveWindow(header); err != nil {
 				return err
 			}
-		case wire.MuxFrameDatagram:
-			return errDatagram
+		case wire.MuxFrameFin, wire.MuxFrameReset:
+			s.receiveClose(header)
 		}
 	}
 }
 
-func (s *shared) receiveStream(header wire.MuxHeader, payload []byte) error {
-	if header.Flags&wire.MuxFlagSYN != 0 {
-		stream, err := s.insertFlow(header.FlowID)
-		if err != nil {
-			return err
-		}
-		if err := s.offerIncoming(stream); err != nil {
-			return err
-		}
+func (s *shared) receiveOpen(header wire.MuxHeader) error {
+	stream, err := s.insertFlow(header.FlowID, true)
+	if err != nil {
+		return err
 	}
-	if header.Flags&wire.MuxFlagRST != 0 {
+	extra := int(header.Value)
+	if extra != 0 {
+		s.flowsMu.Lock()
+		flow := s.flows[header.FlowID]
+		if flow == nil {
+			s.flowsMu.Unlock()
+			return errClosed
+		}
+		if flow.sendCredit.availablePermits()+extra > creditUnits(maxStreamWindowBytes) {
+			s.flowsMu.Unlock()
+			return errWindowOverflow
+		}
+		flow.sendCredit.add(extra)
+		s.flowsMu.Unlock()
+	}
+	return s.offerIncoming(stream)
+}
+
+func (s *shared) receiveData(header wire.MuxHeader, payload []byte) error {
+	charge := frameCharge(len(payload))
+	ch, err := s.admitReceive(header.FlowID, charge)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-s.closedCh:
+		return errClosed
+	case ch <- inbound{kind: inboundData, payload: payload, charge: charge}:
+		return nil
+	default:
+		s.releaseReceive(header.FlowID, charge)
+		return nil
+	}
+}
+
+func (s *shared) receiveClose(header wire.MuxHeader) {
+	if header.Kind == wire.MuxFrameReset {
 		if flow := s.removeFlow(header.FlowID); flow != nil {
 			select {
 			case flow.inbound <- inbound{kind: inboundReset}:
 			default:
 			}
 		}
-		return nil
+		return
 	}
-	if len(payload) > 0 {
-		ch, err := s.admitReceive(header.FlowID, len(payload))
-		if err != nil {
-			return err
-		}
+	s.flowsMu.Lock()
+	flow := s.flows[header.FlowID]
+	var ch chan inbound
+	if flow != nil && !flow.remoteFin {
+		flow.remoteFin = true
+		ch = flow.inbound
+	}
+	s.flowsMu.Unlock()
+	if ch != nil {
 		select {
+		case ch <- inbound{kind: inboundFin}:
 		case <-s.closedCh:
-			return errClosed
-		case ch <- inbound{kind: inboundData, payload: payload, charge: len(payload)}:
+		default:
 		}
 	}
-	if header.Flags&wire.MuxFlagFIN != 0 {
-		s.flowsMu.Lock()
-		flow := s.flows[header.FlowID]
-		var ch chan inbound
-		if flow != nil {
-			ch = flow.inbound
-		}
-		s.flowsMu.Unlock()
-		if ch != nil {
-			select {
-			case ch <- inbound{kind: inboundFin}:
-			case <-s.closedCh:
-			}
-		}
-	}
-	return nil
 }
 
 func (s *shared) receiveWindow(header wire.MuxHeader) error {
 	credit := int(header.Value)
 	if header.FlowID == 0 {
-		if s.connSend.availablePermits()+credit > s.config.ConnectionWindowBytes {
+		if s.connSend.availablePermits()+credit > creditUnits(maxConnectionWindowBytes) {
 			return errWindowOverflow
 		}
 		s.connSend.add(credit)
+		if n := s.connSend.availablePermits(); int64(n) > s.connSendPeak.Load() {
+			s.connSendPeak.Store(int64(n))
+		}
 		return nil
 	}
 	s.flowsMu.Lock()
@@ -108,12 +134,11 @@ func (s *shared) receiveWindow(header wire.MuxHeader) error {
 		s.flowsMu.Unlock()
 		return nil
 	}
-	if flow.sendCredit.availablePermits()+credit > s.config.StreamWindowBytes {
+	if flow.sendCredit.availablePermits()+credit > creditUnits(maxStreamWindowBytes) {
 		s.flowsMu.Unlock()
 		return errWindowOverflow
 	}
 	flow.sendCredit.add(credit)
-	s.returnFairCredit(flow, credit)
 	s.flowsMu.Unlock()
 	return nil
 }
@@ -157,7 +182,7 @@ func (s *shared) writeLoop(w io.Writer) error {
 }
 
 func (s *shared) writeItem(w io.Writer, item outbound) error {
-	if item.flushed != nil && len(item.payload) == 0 && item.header.Flags == 0 {
+	if item.flushed != nil && item.header.Kind == 0 && len(item.payload) == 0 {
 		err := flushWriter(w)
 		select {
 		case item.flushed <- err:
@@ -176,6 +201,9 @@ func (s *shared) writeItem(w io.Writer, item outbound) error {
 		if err := writeFull(w, item.payload); err != nil {
 			return err
 		}
+	}
+	if item.release != nil {
+		item.release.add(1)
 	}
 	return nil
 }
@@ -239,53 +267,40 @@ func appendWindows(encoded []byte, flowID uint32, credit int) ([]byte, error) {
 }
 
 func (s *shared) sendData(flowID uint32, payload []byte) error {
-	charge := len(payload)
-	credits, err := s.sendCredits(flowID)
-	if err != nil {
+	charge := frameCharge(len(payload))
+	s.flowsMu.Lock()
+	flow := s.flows[flowID]
+	s.flowsMu.Unlock()
+	if flow == nil {
+		return errClosed
+	}
+	if err := flow.sendSlot.acquire(1, s.closedCh); err != nil {
 		return err
 	}
-	if err := credits.fair.acquire(charge, s.closedCh); err != nil {
-		return err
-	}
-	if err := credits.stream.acquire(charge, s.closedCh); err != nil {
-		credits.fair.add(charge)
+	if err := flow.sendCredit.acquire(charge, s.closedCh); err != nil {
+		flow.sendSlot.add(1)
 		return err
 	}
 	if err := s.connSend.acquire(charge, s.closedCh); err != nil {
-		credits.fair.add(charge)
-		credits.stream.add(charge)
+		flow.sendSlot.add(1)
+		flow.sendCredit.add(charge)
 		return err
 	}
-	header, err := wire.StreamMuxHeader(flowID, 0, len(payload))
+	header, err := wire.DataMuxHeader(flowID, len(payload))
 	if err != nil {
-		credits.fair.add(charge)
-		credits.stream.add(charge)
+		flow.sendSlot.add(1)
+		flow.sendCredit.add(charge)
 		s.connSend.add(charge)
 		return err
 	}
 	copied := append([]byte(nil), payload...)
-	if err := s.sendOutbound(outbound{header: header, payload: copied}); err != nil {
-		credits.fair.add(charge)
-		credits.stream.add(charge)
+	if err := s.sendOutbound(outbound{header: header, payload: copied, release: flow.sendSlot}); err != nil {
+		flow.sendSlot.add(1)
+		flow.sendCredit.add(charge)
 		s.connSend.add(charge)
 		return err
 	}
 	return nil
-}
-
-func (s *shared) offerIncoming(stream *Stream) error {
-	s.flowsMu.Lock()
-	ch := s.incoming
-	s.flowsMu.Unlock()
-	if ch == nil {
-		return errClosed
-	}
-	select {
-	case <-s.closedCh:
-		return errClosed
-	case ch <- stream:
-		return nil
-	}
 }
 
 func writeFull(w io.Writer, p []byte) error {

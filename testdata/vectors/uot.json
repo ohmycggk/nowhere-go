@@ -1,5 +1,5 @@
 {
-  "protocol": "nowhere-v1",
+  "protocol": "nowhere-v2",
   "source": {
     "rust": "Nowhere/src/tests/protocol/uot.rs::packet_codec_contains_only_u16_length_and_payload"
   },

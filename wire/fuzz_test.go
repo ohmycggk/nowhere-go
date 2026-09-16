@@ -56,7 +56,7 @@ func FuzzTarget(f *testing.F) {
 }
 
 func FuzzDecodeUDPFrame(f *testing.F) {
-	f.Add([]byte{byte(UDPFrameTypeData), 0, 0, 0, 1})
+	f.Add([]byte{0, 0, 0, 1})
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = DecodeUDPFrame(input)

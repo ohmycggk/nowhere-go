@@ -5,81 +5,89 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	carriermux "github.com/ohmycggk/nowhere-go/carrier/mux"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
-// FlowsPerShard is the 1.8.1 client shard density. A new Mux TLS carrier opens
-// when every live shard in the direction already has this many active streams.
-// Sharding is runtime placement and does not add wire fields.
-const FlowsPerShard = 4
+// MaxMuxCarriers is the Nowhere 2 client pool cap for established or connecting
+// Mux TLS carriers in one session. Both logical directions share the pool.
+const MaxMuxCarriers = 8
 
-// MuxDirection selects the client uplink or downlink shard set.
+// MuxDirection is retained for API compatibility. Nowhere 2 uses one shared
+// full-duplex Mux pool, so uplink and downlink reservations compete together.
 type MuxDirection uint8
 
 const (
-	// MuxUp is the uplink shard set. Symmetric tcp/tcp flows use this set.
+	// MuxUp is accepted by Open and mapped onto the shared pool.
 	MuxUp MuxDirection = iota
-	// MuxDown is the downlink shard set, used for ATTACH on TLS.
+	// MuxDown is accepted by Open and mapped onto the shared pool.
 	MuxDown
 )
 
-// MuxManager owns lazily opened Mux TLS shards for one bundle session.
+// MuxManager owns lazily opened Mux TLS carriers for one bundle session.
 type MuxManager struct {
 	cfg *Config
 
 	mu     sync.Mutex
 	closed bool
-	up     *shardSet
-	down   *shardSet
-}
-
-type shardSet struct {
-	mgr     *MuxManager
-	connect chan struct{}
-	mu      sync.Mutex
-	shards  []*muxShard
+	shards []*muxShard
 }
 
 type muxShard struct {
+	mgr     *MuxManager
+	pending atomic.Int64
+
+	mu     sync.Mutex
 	handle *carriermux.Handle
+	err    error
+	ready  chan struct{}
+	once   sync.Once
 }
 
-// NewMuxManager binds a TLS config to Mux shard sets.
+// NewMuxManager binds a TLS config to a shared Mux carrier pool.
 func NewMuxManager(cfg *Config) (*MuxManager, error) {
 	if cfg == nil {
 		return nil, errors.New("nowhere: nil TCP carrier config")
 	}
-	m := &MuxManager{cfg: cfg}
-	m.up = newShardSet(m)
-	m.down = newShardSet(m)
-	return m, nil
+	return &MuxManager{cfg: cfg}, nil
 }
 
-func newShardSet(mgr *MuxManager) *shardSet {
-	return &shardSet{mgr: mgr, connect: make(chan struct{}, 1)}
-}
-
-func (m *MuxManager) set(dir MuxDirection) *shardSet {
-	if dir == MuxDown {
-		return m.down
-	}
-	return m.up
-}
-
-// Open assigns flowID to the least-loaded live shard, dialing a new one if needed.
-func (m *MuxManager) Open(ctx context.Context, flowID uint32, dir MuxDirection) (net.Conn, error) {
+// Open assigns flowID to a shared-pool carrier, dialing another if capacity remains.
+func (m *MuxManager) Open(ctx context.Context, flowID uint32, _ MuxDirection) (net.Conn, error) {
 	if m == nil {
 		return nil, errors.New("nowhere: mux manager unavailable")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
-	closed := m.closed
-	m.mu.Unlock()
-	if closed {
+	if m.closed {
+		m.mu.Unlock()
 		return nil, net.ErrClosed
 	}
-	return m.set(dir).open(ctx, flowID)
+	shard := m.reserveLocked()
+	m.mu.Unlock()
+	if shard == nil {
+		return nil, errors.New("nowhere: mux pool unavailable")
+	}
+	defer shard.pending.Add(-1)
+
+	handle, err := shard.wait(ctx)
+	if err != nil {
+		if fallback := m.fallback(); fallback != nil && fallback != shard {
+			fallback.pending.Add(1)
+			defer fallback.pending.Add(-1)
+			handle, err = fallback.wait(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return handle.OpenStream(flowID)
+		}
+		return nil, err
+	}
+	return handle.OpenStream(flowID)
 }
 
 func (m *MuxManager) Close() error {
@@ -92,152 +100,211 @@ func (m *MuxManager) Close() error {
 		return nil
 	}
 	m.closed = true
+	shards := append([]*muxShard(nil), m.shards...)
+	m.shards = nil
 	m.mu.Unlock()
-	m.up.closeAll()
-	m.down.closeAll()
+	for _, shard := range shards {
+		shard.close()
+	}
 	return nil
 }
 
-func (s *shardSet) open(ctx context.Context, flowID uint32) (net.Conn, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := s.acquireConnect(ctx); err != nil {
-		return nil, err
-	}
-	defer s.releaseConnect()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if shard := s.selectAvailable(); shard != nil {
-		return shard.handle.OpenStream(flowID)
-	}
-	shard, err := s.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return shard.handle.OpenStream(flowID)
-}
-
-func (s *shardSet) acquireConnect(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	select {
-	case s.connect <- struct{}{}:
-		if err := ctx.Err(); err != nil {
-			s.releaseConnect()
-			return err
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s *shardSet) releaseConnect() { <-s.connect }
-
-func (s *shardSet) selectAvailable() *muxShard {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (m *MuxManager) reserveLocked() *muxShard {
+	live := m.shards[:0]
 	var best *muxShard
-	bestActive := FlowsPerShard
-	live := s.shards[:0]
-	for _, shard := range s.shards {
-		if shard.handle.IsClosed() {
+	bestActive := 0
+	bestPressure := 0
+	have := false
+	for _, shard := range m.shards {
+		if shard.closed() {
 			continue
 		}
 		live = append(live, shard)
-		n := shard.handle.ActiveStreams()
-		if n < bestActive {
-			bestActive = n
+		active, pressure := shard.occupancy()
+		if !have || muxBetter(active, pressure, bestActive, bestPressure) {
 			best = shard
+			bestActive = active
+			bestPressure = pressure
+			have = true
 		}
 	}
-	s.shards = live
-	if best == nil || bestActive >= FlowsPerShard {
-		return nil
+	m.shards = live
+	if have && (bestActive == 0 || len(m.shards) >= MaxMuxCarriers) {
+		best.pending.Add(1)
+		return best
+	}
+	shard := &muxShard{mgr: m, ready: make(chan struct{})}
+	shard.pending.Add(1)
+	m.shards = append(m.shards, shard)
+	go shard.dial()
+	go m.monitor(shard)
+	return shard
+}
+
+func muxBetter(active, pressure, bestActive, bestPressure int) bool {
+	idle, bestIdle := active == 0, bestActive == 0
+	if idle != bestIdle {
+		return idle
+	}
+	if pressure != bestPressure {
+		return pressure < bestPressure
+	}
+	return active < bestActive
+}
+
+func (m *MuxManager) fallback() *muxShard {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *muxShard
+	bestActive := 0
+	bestPressure := 0
+	have := false
+	for _, shard := range m.shards {
+		handle := shard.liveHandle()
+		if handle == nil {
+			continue
+		}
+		active, pressure := shard.occupancy()
+		if !have || pressure < bestPressure || (pressure == bestPressure && active < bestActive) {
+			best = shard
+			bestActive = active
+			bestPressure = pressure
+			have = true
+		}
 	}
 	return best
 }
 
-func (s *shardSet) dial(ctx context.Context) (*muxShard, error) {
-	conn, err := dialMuxCarrier(ctx, s.mgr.cfg)
-	if err != nil {
-		return nil, err
-	}
-	handle, incoming, err := carriermux.Start(conn, carriermux.DefaultConfig())
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	incoming.Discard()
-	shard := &muxShard{handle: handle}
-	s.mu.Lock()
-	s.shards = append(s.shards, shard)
-	s.mu.Unlock()
-	go s.monitor(shard)
-	return shard, nil
-}
-
-func (s *shardSet) monitor(shard *muxShard) {
+func (m *MuxManager) monitor(shard *muxShard) {
 	ctx := context.Background()
+	handle, err := shard.wait(ctx)
+	if err != nil {
+		m.remove(shard)
+		return
+	}
 	for {
-		if shard.handle.IsClosed() {
-			s.remove(shard)
+		if handle.IsClosed() {
+			m.remove(shard)
 			return
 		}
-		if !shard.handle.IdleFor(ctx, carriermux.IdleTimeout) {
-			if shard.handle.IsClosed() {
-				s.remove(shard)
-				return
+		if !handle.IdleFor(ctx, carriermux.IdleTimeout) {
+			if handle.IsClosed() {
+				m.remove(shard)
 			}
 			continue
 		}
-		if err := s.acquireConnect(context.Background()); err != nil {
+		if shard.pending.Load() == 0 && handle.ActiveStreams() == 0 && !handle.IsClosed() {
+			m.remove(shard)
+			handle.Close()
 			return
 		}
-		if shard.handle.ActiveStreams() == 0 && !shard.handle.IsClosed() {
-			s.removeLocked(shard)
-			s.releaseConnect()
-			shard.handle.Close()
-			return
-		}
-		s.releaseConnect()
 	}
 }
 
-func (s *shardSet) remove(shard *muxShard) {
-	s.mu.Lock()
-	s.removeLocked(shard)
-	s.mu.Unlock()
-}
-
-func (s *shardSet) removeLocked(shard *muxShard) {
-	out := s.shards[:0]
-	for _, item := range s.shards {
+func (m *MuxManager) remove(shard *muxShard) {
+	m.mu.Lock()
+	out := m.shards[:0]
+	for _, item := range m.shards {
 		if item != shard {
 			out = append(out, item)
 		}
 	}
-	s.shards = out
+	m.shards = out
+	m.mu.Unlock()
 }
 
-func (s *shardSet) closeAll() {
+func (s *muxShard) occupancy() (active, pressure int) {
+	active = int(s.pending.Load())
+	if handle := s.liveHandle(); handle != nil {
+		active += handle.ActiveStreams()
+		pressure = handle.Pressure()
+	}
+	return active, pressure
+}
+
+func (s *muxShard) liveHandle() *carriermux.Handle {
 	s.mu.Lock()
-	shards := append([]*muxShard(nil), s.shards...)
-	s.shards = nil
+	defer s.mu.Unlock()
+	if s.handle == nil || s.handle.IsClosed() {
+		return nil
+	}
+	return s.handle
+}
+
+func (s *muxShard) closed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return true
+	}
+	return s.handle != nil && s.handle.IsClosed()
+}
+
+func (s *muxShard) wait(ctx context.Context) (*carriermux.Handle, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.ready:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.handle == nil {
+		return nil, errClosedConn()
+	}
+	return s.handle, nil
+}
+
+func (s *muxShard) dial() {
+	s.once.Do(func() {
+		conn, err := dialMuxCarrier(context.Background(), s.mgr.cfg)
+		if err != nil {
+			s.fail(err)
+			return
+		}
+		handle, incoming, err := carriermux.Start(conn, carriermux.DefaultConfig())
+		if err != nil {
+			_ = conn.Close()
+			s.fail(err)
+			return
+		}
+		incoming.Discard()
+		s.mu.Lock()
+		s.handle = handle
+		s.mu.Unlock()
+		close(s.ready)
+	})
+}
+
+func (s *muxShard) fail(err error) {
+	s.mu.Lock()
+	s.err = err
 	s.mu.Unlock()
-	for _, shard := range shards {
-		shard.handle.Close()
+	close(s.ready)
+}
+
+func (s *muxShard) close() {
+	s.mu.Lock()
+	handle := s.handle
+	s.mu.Unlock()
+	if handle != nil {
+		handle.Close()
 	}
 }
+
+func errClosedConn() error { return net.ErrClosed }
 
 func dialMuxCarrier(ctx context.Context, cfg *Config) (net.Conn, error) {
 	if cfg == nil || cfg.dialer == nil || cfg.tlsDialer == nil {
 		return nil, errors.New("nowhere: incomplete TCP carrier config")
 	}
 	raw, err := cfg.dialer.DialContext(ctx, "tcp", dialAddr(cfg))
+	if err != nil {
+		return nil, err
+	}
+	raw, err = wrapMorphClient(cfg, raw)
 	if err != nil {
 		return nil, err
 	}

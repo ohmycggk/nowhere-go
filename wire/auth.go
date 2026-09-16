@@ -18,7 +18,7 @@ const (
 	AuthTransportQUIC AuthTransport = 0x02
 )
 
-// Validate rejects transport values that are not defined by Nowhere v1.
+// Validate rejects transport values that are not defined by Nowhere 2.
 func (t AuthTransport) Validate() error {
 	switch t {
 	case AuthTransportTLSTCP, AuthTransportQUIC:
@@ -31,7 +31,7 @@ func (t AuthTransport) Validate() error {
 // TLSExporterLen is the length of a TLS exporter bound to one connection.
 const TLSExporterLen = 32
 
-// TLSExporterLabel is the fixed TLS exporter label required by Nowhere 1.5.
+// TLSExporterLabel is the fixed TLS exporter label required by Nowhere 2.
 const TLSExporterLabel = "EXPORTER-Nowhere-Auth"
 
 // EmptyTLSExporterContext returns a present empty context for TLS exporter APIs.

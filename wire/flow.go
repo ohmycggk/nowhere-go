@@ -9,9 +9,13 @@ import (
 // big-endian uint32 flow id.
 const FlowHeaderLen = 5
 
-// FlowID identifies one logical flow scoped to a session. Nowhere carries
-// it as a non-zero uint32.
+// FlowID identifies one logical flow scoped to a session. Nowhere 2 carries
+// it as a 30-bit identifier in 1..=MaxFlowID.
 type FlowID = uint32
+
+// MaxFlowID is the largest logical-flow identifier representable by every
+// nw2 carrier. The upper two bits of the u32 field must be zero.
+const MaxFlowID FlowID = 0x3fffffff
 
 // MaxPortalHops is the largest remaining native Portal forwarding budget
 // representable in the FLOW header.
@@ -75,8 +79,8 @@ func (h FlowHeader) Validate() error {
 	if h.Hops > MaxPortalHops {
 		return errors.New("nowhere: portal hop budget exceeds 7")
 	}
-	if h.FlowID == 0 {
-		return errors.New("nowhere: zero flow id")
+	if h.FlowID == 0 || h.FlowID > MaxFlowID {
+		return errors.New("nowhere: flow id out of range")
 	}
 	switch h.Role {
 	case FlowRoleDuplex:
@@ -84,7 +88,7 @@ func (h FlowHeader) Validate() error {
 			return errors.New("nowhere: duplex carrier mismatch")
 		}
 	case FlowRoleOpen, FlowRoleAttach:
-		// Nowhere 1.8 allows OPEN/ATTACH with equal carriers. Vector still
+		// Nowhere 2 allows OPEN/ATTACH with equal carriers. Vector still
 		// emits DUPLEX when both directions share a carrier.
 	default:
 		return errors.New("nowhere: invalid flow role")

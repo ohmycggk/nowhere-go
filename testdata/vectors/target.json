@@ -1,5 +1,5 @@
 {
-  "protocol": "nowhere-v1",
+  "protocol": "nowhere-v2",
   "source": {
     "rust": "Nowhere/src/tests/protocol/request.rs + util.rs"
   },

@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// UDPFrameDATA / FRAGMENT / CLOSE are the wire frame types carried in the low
-// two bits of the flags byte. High six bits are reserved and must be zero.
+// UDPFrameDATA / FRAGMENT / CLOSE occupy the high two bits of the packed
+// 32-bit header word. flow_id occupies the low 30 bits.
 const (
 	UDPFrameDATA     byte = 0
 	UDPFrameFRAGMENT byte = 1
@@ -14,13 +14,13 @@ const (
 )
 
 const (
-	udpFrameTypeMask byte = 0b0000_0011
-	udpReservedMask  byte = 0b1111_1100
+	udpFrameTypeShift uint32 = 30
+	udpFrameTypeMask  uint32 = 0b11 << udpFrameTypeShift
 
 	// UDPHeaderLen is the common unfragmented DATA / CLOSE header length.
-	UDPHeaderLen = 5
+	UDPHeaderLen = 4
 	// UDPFragmentHeaderLen is the FRAGMENT header length.
-	UDPFragmentHeaderLen = 13
+	UDPFragmentHeaderLen = 12
 	// UDPPacketMax is the largest UDP payload representable by the protocol.
 	UDPPacketMax = 0xffff
 )
@@ -54,17 +54,17 @@ type UDPFrame struct {
 	Fragment UDPFragment
 }
 
-// EncodeUDPDataHeader encodes a 5-byte unfragmented DATA header.
+// EncodeUDPDataHeader encodes a 4-byte unfragmented DATA header.
 func EncodeUDPDataHeader(flowID FlowID) ([UDPHeaderLen]byte, error) {
 	return encodeUDPBaseHeader(UDPFrameDATA, flowID)
 }
 
-// EncodeUDPClose encodes a 5-byte CLOSE frame.
+// EncodeUDPClose encodes a 4-byte CLOSE frame.
 func EncodeUDPClose(flowID FlowID) ([UDPHeaderLen]byte, error) {
 	return encodeUDPBaseHeader(UDPFrameCLOSE, flowID)
 }
 
-// EncodeUDPFragmentHeader encodes a validated 13-byte FRAGMENT header.
+// EncodeUDPFragmentHeader encodes a validated 12-byte FRAGMENT header.
 func EncodeUDPFragmentHeader(flowID FlowID, fragment UDPFragment) ([UDPFragmentHeaderLen]byte, error) {
 	if err := validateFlowID(flowID); err != nil {
 		return [UDPFragmentHeaderLen]byte{}, err
@@ -75,14 +75,17 @@ func EncodeUDPFragmentHeader(flowID FlowID, fragment UDPFragment) ([UDPFragmentH
 	if err := validateFragmentMetadata(fragment); err != nil {
 		return [UDPFragmentHeaderLen]byte{}, err
 	}
+	word, err := encodeUDPBaseWord(UDPFrameFRAGMENT, flowID)
+	if err != nil {
+		return [UDPFragmentHeaderLen]byte{}, err
+	}
 	var out [UDPFragmentHeaderLen]byte
-	out[0] = UDPFrameFRAGMENT
-	encodeUint32BE(out[1:5], flowID)
-	encodeUint32BE(out[5:9], fragment.PacketID)
-	out[9] = fragment.FragmentIndex
-	out[10] = fragment.FragmentCount
-	out[11] = byte(fragment.TotalLen >> 8)
-	out[12] = byte(fragment.TotalLen)
+	encodeUint32BE(out[0:4], word)
+	encodeUint32BE(out[4:8], fragment.PacketID)
+	out[8] = fragment.FragmentIndex
+	out[9] = fragment.FragmentCount
+	out[10] = byte(fragment.TotalLen >> 8)
+	out[11] = byte(fragment.TotalLen)
 	return out, nil
 }
 
@@ -186,15 +189,13 @@ func DecodeUDPFrame(buf []byte) (UDPFrame, error) {
 	if len(buf) < UDPHeaderLen {
 		return UDPFrame{}, ErrInvalidFrame
 	}
-	flags := buf[0]
-	if flags&udpReservedMask != 0 {
-		return UDPFrame{}, ErrInvalidFrame
-	}
-	flowID := decodeUint32BE(buf[1:5])
+	base := decodeUint32BE(buf[:4])
+	frameType := byte((base & udpFrameTypeMask) >> udpFrameTypeShift)
+	flowID := base & MaxFlowID
 	if err := validateFlowID(flowID); err != nil {
 		return UDPFrame{}, ErrInvalidFrame
 	}
-	switch flags & udpFrameTypeMask {
+	switch frameType {
 	case UDPFrameDATA:
 		payload := buf[UDPHeaderLen:]
 		if err := validateUDPPayload(payload); err != nil {
@@ -217,15 +218,15 @@ func decodeUDPFragmentFrame(buf []byte, flowID FlowID) (UDPFrame, error) {
 	if len(buf) < UDPFragmentHeaderLen {
 		return UDPFrame{}, ErrInvalidFrame
 	}
-	packetID := decodeUint32BE(buf[5:9])
+	packetID := decodeUint32BE(buf[4:8])
 	if err := validatePacketID(packetID); err != nil {
 		return UDPFrame{}, ErrInvalidFrame
 	}
 	fragment := UDPFragment{
 		PacketID:      packetID,
-		FragmentIndex: buf[9],
-		FragmentCount: buf[10],
-		TotalLen:      uint16(buf[11])<<8 | uint16(buf[12]),
+		FragmentIndex: buf[8],
+		FragmentCount: buf[9],
+		TotalLen:      uint16(buf[10])<<8 | uint16(buf[11]),
 		Payload:       buf[UDPFragmentHeaderLen:],
 	}
 	if err := validateFragmentMetadata(fragment); err != nil {
@@ -239,18 +240,28 @@ func decodeUDPFragmentFrame(buf []byte, flowID FlowID) (UDPFrame, error) {
 }
 
 func encodeUDPBaseHeader(frameType byte, flowID FlowID) ([UDPHeaderLen]byte, error) {
-	if err := validateFlowID(flowID); err != nil {
+	word, err := encodeUDPBaseWord(frameType, flowID)
+	if err != nil {
 		return [UDPHeaderLen]byte{}, err
 	}
 	var out [UDPHeaderLen]byte
-	out[0] = frameType
-	encodeUint32BE(out[1:], flowID)
+	encodeUint32BE(out[:], word)
 	return out, nil
 }
 
+func encodeUDPBaseWord(frameType byte, flowID FlowID) (uint32, error) {
+	if err := validateFlowID(flowID); err != nil {
+		return 0, err
+	}
+	if frameType > UDPFrameCLOSE {
+		return 0, errors.New("nowhere: invalid udp frame type")
+	}
+	return (uint32(frameType) << udpFrameTypeShift) | flowID, nil
+}
+
 func validateFlowID(flowID FlowID) error {
-	if flowID == 0 {
-		return errors.New("nowhere: zero flow id")
+	if flowID == 0 || flowID > MaxFlowID {
+		return errors.New("nowhere: flow id out of range")
 	}
 	return nil
 }
