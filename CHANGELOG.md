@@ -16,6 +16,18 @@ and all clients.
   UDP ASSOCIATE. There is no direct fallback; `socks` and `next` stay mutually
   exclusive.
 
+### Changed
+
+- Upgrade the Portal CLI to [quic-go](https://github.com/quic-go/quic-go)
+  v0.62.0 (`*quic.Conn` / `*quic.Stream`). The CLI module now requires Go 1.26.
+  Library tests still run on Go 1.20; CI skips the CLI on that matrix entry.
+
+### Fixed
+
+- Deliver Mux DATA, FIN, and RESET when the inbound queue is full instead of
+  dropping frames. Silent drops truncated payloads and stalled credit-window
+  tests under load.
+
 ## v2.0.0 - 2026-09-16
 
 ### Changed

@@ -22,8 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Align with go.mod (1.20) + current LTS-ish + latest stable
-        go: ["1.20.x", "1.24.x", "stable"]
+        # Align with go.mod (1.20) + CLI toolchain (quic-go needs 1.26) + latest stable
+        go: ["1.20.x", "1.26.x", "stable"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -39,11 +39,13 @@ jobs:
       - name: Run nowhere-check
         run: /tmp/nowhere-check
       - name: Test and build Portal/Vector CLI
+        if: matrix.go != '1.20.x'
         run: |
           cd cmd/nowhere
           GOWORK=off go test ./...
           GOWORK=off go build -o /tmp/nowhere .
       - name: nowhere CLI help
+        if: matrix.go != '1.20.x'
         run: /tmp/nowhere -h
 
   staticcheck:

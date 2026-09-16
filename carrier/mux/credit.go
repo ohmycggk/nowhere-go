@@ -49,19 +49,6 @@ func (s *semaphore) add(n int) {
 	s.mu.Unlock()
 }
 
-func (s *semaphore) forget(n int) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if n > s.available {
-		n = s.available
-	}
-	if n < 0 {
-		n = 0
-	}
-	s.available -= n
-	return n
-}
-
 func (s *semaphore) availablePermits() int {
 	s.mu.Lock()
 	n := s.available

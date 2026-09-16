@@ -7,9 +7,8 @@ import (
 )
 
 func (s *shared) runReader(r io.Reader) {
-	if err := s.readLoop(r); err != nil {
-		s.close()
-	}
+	_ = s.readLoop(r)
+	s.close()
 }
 
 func (s *shared) readLoop(r io.Reader) error {
@@ -83,9 +82,6 @@ func (s *shared) receiveData(header wire.MuxHeader, payload []byte) error {
 		return errClosed
 	case ch <- inbound{kind: inboundData, payload: payload, charge: charge}:
 		return nil
-	default:
-		s.releaseReceive(header.FlowID, charge)
-		return nil
 	}
 }
 
@@ -94,7 +90,7 @@ func (s *shared) receiveClose(header wire.MuxHeader) {
 		if flow := s.removeFlow(header.FlowID); flow != nil {
 			select {
 			case flow.inbound <- inbound{kind: inboundReset}:
-			default:
+			case <-s.closedCh:
 			}
 		}
 		return
@@ -111,7 +107,6 @@ func (s *shared) receiveClose(header wire.MuxHeader) {
 		select {
 		case ch <- inbound{kind: inboundFin}:
 		case <-s.closedCh:
-		default:
 		}
 	}
 }
@@ -144,9 +139,8 @@ func (s *shared) receiveWindow(header wire.MuxHeader) error {
 }
 
 func (s *shared) runWriter(w io.Writer) {
-	if err := s.writeLoop(w); err != nil {
-		s.close()
-	}
+	_ = s.writeLoop(w)
+	s.close()
 }
 
 func (s *shared) writeLoop(w io.Writer) error {

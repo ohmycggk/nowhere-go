@@ -91,7 +91,7 @@ func (b *clientBackend) Close() error {
 }
 
 type clientSession struct {
-	conn  quic.Connection
+	conn  *quic.Conn
 	pc    net.PacketConn
 	owned bool
 }
@@ -143,7 +143,7 @@ func (s *clientSession) Close() {
 }
 
 type preparedStream struct {
-	stream quic.Stream
+	stream *quic.Stream
 	once   sync.Once
 }
 
@@ -165,7 +165,7 @@ func (p *preparedStream) Close() error {
 }
 
 type streamConn struct {
-	quic.Stream
+	*quic.Stream
 	local, remote net.Addr
 }
 
@@ -210,7 +210,7 @@ func (l *serverListener) Accept(ctx context.Context) (server.QuicConn, error) {
 func (l *serverListener) Close() error { return l.ln.Close() }
 
 type serverConn struct {
-	c quic.Connection
+	c *quic.Conn
 }
 
 func (s *serverConn) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
@@ -228,7 +228,7 @@ func (s *serverConn) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
 	}, nil
 }
 
-type wrappedStream struct{ quic.Stream }
+type wrappedStream struct{ *quic.Stream }
 
 func (s wrappedStream) CancelRead(code uint64) {
 	s.Stream.CancelRead(quic.StreamErrorCode(code))

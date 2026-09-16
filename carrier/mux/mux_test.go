@@ -102,13 +102,14 @@ func TestManySmallWritesCrossCreditWindow(t *testing.T) {
 	}
 	packet := bytes.Repeat([]byte{0x5a}, 1202)
 	const count = 1024
-	done := make(chan []byte, 1)
+	type readResult struct {
+		got []byte
+		err error
+	}
+	done := make(chan readResult, 1)
 	go func() {
 		got, err := io.ReadAll(io.LimitReader(accepted, int64(len(packet)*count)))
-		if err != nil {
-			t.Error(err)
-		}
-		done <- got
+		done <- readResult{got: got, err: err}
 	}()
 	for i := 0; i < count; i++ {
 		if _, err := outgoing.Write(packet); err != nil {
@@ -119,11 +120,14 @@ func TestManySmallWritesCrossCreditWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case got := <-done:
-		if len(got) != len(packet)*count {
-			t.Fatalf("len=%d want %d", len(got), len(packet)*count)
+	case res := <-done:
+		if res.err != nil {
+			t.Fatal(res.err)
 		}
-		for _, b := range got {
+		if len(res.got) != len(packet)*count {
+			t.Fatalf("len=%d want %d", len(res.got), len(packet)*count)
+		}
+		for _, b := range res.got {
 			if b != 0x5a {
 				t.Fatal("payload mismatch")
 			}
