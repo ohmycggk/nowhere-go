@@ -352,6 +352,10 @@ func (s *quicSessionMux) startReceiveLoop() {
 	}
 	s.startOnce.Do(func() {
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
 		s.started = true
 		s.mu.Unlock()
 		go s.receiveLoop()
@@ -552,11 +556,8 @@ queued:
 			if request.cancel() {
 				return errDatagramDeadline
 			}
-			switch request.state.Load() {
-			case quicSendCompleted:
+			if request.state.Load() == quicSendCompleted {
 				return <-request.result
-			case quicSendStarted:
-				s.invalidateRaw(net.ErrClosed)
 			}
 			return errDatagramDeadline
 		}
@@ -662,6 +663,13 @@ func (s *quicSessionMux) sendLoop() {
 				case <-s.done:
 					return
 				default:
+				}
+				if s.ctx.Err() != nil {
+					return
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					_ = s.enqueueClose(flowID)
+					continue
 				}
 				s.invalidateRaw(err)
 				return

@@ -36,7 +36,6 @@ const (
 
 var (
 	errClosed         = errors.New("nowhere: mux carrier is closed")
-	errUnknownFlow    = errors.New("nowhere: frame for unknown mux flow")
 	errWindowExceeded = errors.New("nowhere: peer exceeded mux window")
 	errWindowOverflow = errors.New("nowhere: mux window overflow")
 	errStreamLimit    = errors.New("nowhere: mux stream limit reached")
@@ -44,6 +43,7 @@ var (
 	errInvalidLimits  = errors.New("nowhere: invalid mux limits")
 	errReset          = errors.New("nowhere: mux flow reset")
 	errInvalidFlowID  = errors.New("nowhere: mux flow id out of range")
+	errInterrupted    = errors.New("nowhere: mux wait interrupted")
 )
 
 // Config is the per-carrier Mux window and queue budget.
@@ -90,6 +90,14 @@ func frameCharge(payload int) int {
 	return creditUnits(payload)
 }
 
+func inboundQueueDepth(config Config) int {
+	n := config.StreamWindowBytes / FrameBytes
+	if n < 64 {
+		n = 64
+	}
+	return n
+}
+
 // Handle is one authenticated Mux TLS carrier.
 type Handle struct {
 	shared *shared
@@ -98,6 +106,7 @@ type Handle struct {
 // Incoming accepts peer-opened streams. Client shards should Discard it.
 type Incoming struct {
 	ch     <-chan *Stream
+	closed <-chan struct{}
 	cancel context.CancelFunc
 }
 
@@ -131,6 +140,7 @@ type flowState struct {
 	windowQueued   bool
 	localParts     uint8
 	remoteFin      bool
+	readerClosed   bool
 }
 
 type shared struct {
@@ -193,7 +203,7 @@ func Start(conn net.Conn, config Config) (*Handle, *Incoming, error) {
 		shared.pendingConn.Store(int64(extraConn))
 	}
 	handle := &Handle{shared: shared}
-	incoming := &Incoming{ch: shared.incoming, cancel: incomingCancel}
+	incoming := &Incoming{ch: shared.incoming, closed: shared.closedCh, cancel: incomingCancel}
 	go shared.runReader(conn)
 	go shared.runWriter(conn)
 	go func() {
@@ -227,7 +237,7 @@ func (h *Handle) OpenStream(flowID uint32) (*Stream, error) {
 		h.shared.removeFlow(flowID)
 		return nil, err
 	}
-	if err := h.shared.sendOutbound(outbound{header: header}); err != nil {
+	if err := h.shared.sendOutbound(outbound{header: header}, nil); err != nil {
 		h.shared.removeFlow(flowID)
 		return nil, err
 	}
@@ -345,6 +355,8 @@ func (in *Incoming) Accept(ctx context.Context) (*Stream, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-in.closed:
+		return nil, errClosed
 	case stream, ok := <-in.ch:
 		if !ok {
 			return nil, errClosed
@@ -405,7 +417,7 @@ func (s *shared) insertFlow(flowID uint32, advertiseWindow bool) (*Stream, error
 		extra = creditUnits(s.config.StreamWindowBytes - BaseStreamWindowBytes)
 	}
 	state := &flowState{
-		inbound:        make(chan inbound, 64),
+		inbound:        make(chan inbound, inboundQueueDepth(s.config)),
 		sendCredit:     newSemaphore(creditUnits(BaseStreamWindowBytes)),
 		sendSlot:       newSemaphore(1),
 		receiveCredit:  creditUnits(s.config.StreamWindowBytes),
@@ -462,10 +474,10 @@ func (s *shared) admitReceive(flowID uint32, charge int) (chan inbound, error) {
 	s.connRecvMu.Lock()
 	s.flowsMu.Lock()
 	flow := s.flows[flowID]
-	if flow == nil {
+	if flow == nil || flow.readerClosed {
 		s.flowsMu.Unlock()
 		s.connRecvMu.Unlock()
-		return nil, errUnknownFlow
+		return nil, nil
 	}
 	if flow.remoteFin {
 		s.flowsMu.Unlock()
@@ -558,9 +570,19 @@ func (s *shared) releasePart(flowID uint32) {
 	}
 }
 
-func (s *shared) sendOutbound(item outbound) error {
+func (s *shared) markReaderClosed(flowID uint32) {
+	s.flowsMu.Lock()
+	if flow := s.flows[flowID]; flow != nil {
+		flow.readerClosed = true
+	}
+	s.flowsMu.Unlock()
+}
+
+func (s *shared) sendOutbound(item outbound, stop <-chan struct{}) error {
 	select {
 	case <-s.closedCh:
+		return errClosed
+	case <-stop:
 		return errClosed
 	case s.dataTx <- item:
 		return nil

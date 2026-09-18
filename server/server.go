@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/ohmycggk/nowhere-go/carrier/morph"
 	"github.com/ohmycggk/nowhere-go/diagnostic"
@@ -162,6 +163,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 }
 
 func (s *Server) serveTCP(ctx context.Context, listener net.Listener) error {
+	backoff := time.Millisecond
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -175,9 +177,22 @@ func (s *Server) serveTCP(ctx context.Context, listener net.Listener) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
-				return err
 			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				if backoff < time.Second {
+					backoff *= 2
+				}
+				continue
+			}
+			return err
 		}
+		backoff = time.Millisecond
 		go func(raw net.Conn) {
 			if s.config != nil && s.config.morph != nil {
 				raw = morph.WrapTCPServer(raw, *s.config.morph)

@@ -85,6 +85,7 @@ type claimEntry struct {
 	permit           *udpPermit
 	pendingTCP       bool
 	terminalConsumed bool
+	expiredAt        time.Time
 	active           *claimedFlow
 }
 
@@ -359,9 +360,10 @@ func (r *claimRegistry) Submit(ctx context.Context, claim flowClaim) (*claimedFl
 		claim.close(ErrDraining)
 		return nil, ErrDraining
 	}
+	r.expireTerminalsLocked(time.Now())
 	sessionClaims := 0
-	for existing := range r.entries {
-		if existing.sessionID == claim.SessionID {
+	for existing, entry := range r.entries {
+		if existing.sessionID == claim.SessionID && (entry.state == claimPending || entry.state == claimActive) {
 			sessionClaims++
 		}
 	}
@@ -986,7 +988,13 @@ func (r *claimRegistry) failPendingLocked(entry *claimEntry, cause error, keepTe
 	if selected != nil {
 		entry.terminalConsumed = true
 	}
+	claims := entryClaims(entry)
 	if keepTerminal {
+		entry.open = nil
+		entry.attach = nil
+		entry.duplex = nil
+		entry.selected = nil
+		entry.expiredAt = time.Now().Add(r.pairTimeout)
 		r.addTerminalLocked(entry)
 	} else {
 		delete(r.entries, entry.key)
@@ -995,7 +1003,7 @@ func (r *claimRegistry) failPendingLocked(entry *claimEntry, cause error, keepTe
 	close(entry.done)
 	permit := entry.permit
 	entry.permit = nil
-	return entryClaims(entry), selected, permit
+	return claims, selected, permit
 }
 
 func (r *claimRegistry) releaseActive(entry *claimEntry) {
@@ -1123,6 +1131,26 @@ func claimPairEvent(code string, entry *claimEntry, received *flowClaim, cause e
 		event.ExpectedTransport = carrierTransportName(entry.metadata.Uplink)
 	}
 	return event
+}
+
+func (r *claimRegistry) expireTerminalsLocked(now time.Time) {
+	if len(r.terminalOrder) == 0 {
+		return
+	}
+	compacted := r.terminalOrder[:0]
+	for _, candidate := range r.terminalOrder {
+		current := r.entries[candidate.key]
+		if current != candidate || candidate.state != claimTerminal {
+			continue
+		}
+		if !candidate.expiredAt.IsZero() && !candidate.expiredAt.After(now) {
+			delete(r.entries, candidate.key)
+			r.maybeCleanupGenerationLocked(candidate.key.sessionID)
+			continue
+		}
+		compacted = append(compacted, candidate)
+	}
+	r.terminalOrder = compacted
 }
 
 func (r *claimRegistry) addTerminalLocked(entry *claimEntry) {

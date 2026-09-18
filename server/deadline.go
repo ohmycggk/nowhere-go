@@ -32,6 +32,16 @@ func (d *deadlineSignal) set(deadline time.Time) {
 	d.mu.Unlock()
 }
 
+func (d *deadlineSignal) stop() {
+	d.mu.Lock()
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	d.ch = nil
+	d.mu.Unlock()
+}
+
 func (d *deadlineSignal) wait() <-chan struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()

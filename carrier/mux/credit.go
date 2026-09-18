@@ -1,6 +1,10 @@
 package mux
 
-import "sync"
+import (
+	"os"
+	"sync"
+	"time"
+)
 
 type semaphore struct {
 	mu        sync.Mutex
@@ -14,6 +18,10 @@ func newSemaphore(n int) *semaphore {
 }
 
 func (s *semaphore) acquire(n int, stop <-chan struct{}) error {
+	return s.acquireUntil(n, stop, nil, time.Time{})
+}
+
+func (s *semaphore) acquireUntil(n int, stopA, stopB <-chan struct{}, deadline time.Time) error {
 	if n < 0 {
 		n = 0
 	}
@@ -31,10 +39,23 @@ func (s *semaphore) acquire(n int, stop <-chan struct{}) error {
 		ch := make(chan struct{})
 		s.waiters = append(s.waiters, ch)
 		s.mu.Unlock()
+
+		timer, timeout := deadlineChan(deadline)
+		var err error
 		select {
 		case <-ch:
-		case <-stop:
-			return errClosed
+		case <-stopA:
+			err = errClosed
+		case <-stopB:
+			err = errInterrupted
+		case <-timeout:
+			err = os.ErrDeadlineExceeded
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		if err != nil {
+			return err
 		}
 	}
 }

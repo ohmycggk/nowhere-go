@@ -91,8 +91,10 @@ func (r *claimRegistry) SubmitUDPWithGeneration(ctx context.Context, sessionID w
 		downlink = active.Attach.UDP.Downlink
 	}
 	if uplink == nil || downlink == nil {
+		err := fmt.Errorf("%w: incomplete UDP pair", ErrInvalidHandler)
+		closeClaimedFlow(active, err)
 		active.Release()
-		return nil, fmt.Errorf("%w: incomplete UDP pair", ErrInvalidHandler)
+		return nil, err
 	}
 	return &pairedUDP{
 		FlowID: header.FlowID, Target: active.Target, Hops: active.Metadata.Hops, Uplink: uplink, Downlink: downlink,
@@ -515,6 +517,8 @@ func (c *pairedUDPConn) closeWithError(cause error) {
 		c.idle.Stop()
 	}
 	c.idleMu.Unlock()
+	c.readDL.stop()
+	c.writeDL.stop()
 	if downlink, ok := c.downlink.(*quicUDPDownlinkBound); ok {
 		_ = downlink.terminate(cause, c.ready.Load() && !forced)
 		closeUDPHalfWithError(udpHalf{Uplink: c.uplink}, cause)

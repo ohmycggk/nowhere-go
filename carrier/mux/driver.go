@@ -77,6 +77,9 @@ func (s *shared) receiveData(header wire.MuxHeader, payload []byte) error {
 	if err != nil {
 		return err
 	}
+	if ch == nil {
+		return nil
+	}
 	select {
 	case <-s.closedCh:
 		return errClosed
@@ -260,27 +263,25 @@ func appendWindows(encoded []byte, flowID uint32, credit int) ([]byte, error) {
 	return encoded, nil
 }
 
-func (s *shared) sendData(flowID uint32, payload []byte) error {
+func (s *shared) sendData(st *Stream, payload []byte) error {
 	charge := frameCharge(len(payload))
 	s.flowsMu.Lock()
-	flow := s.flows[flowID]
+	flow := s.flows[st.flowID]
 	s.flowsMu.Unlock()
 	if flow == nil {
 		return errClosed
 	}
-	if err := flow.sendSlot.acquire(1, s.closedCh); err != nil {
+	if err := st.acquireCredits(flow, charge); err != nil {
 		return err
 	}
-	if err := flow.sendCredit.acquire(charge, s.closedCh); err != nil {
-		flow.sendSlot.add(1)
-		return err
-	}
-	if err := s.connSend.acquire(charge, s.closedCh); err != nil {
+	wait, _, closed := st.writeSnapshot()
+	if closed {
 		flow.sendSlot.add(1)
 		flow.sendCredit.add(charge)
-		return err
+		s.connSend.add(charge)
+		return errClosed
 	}
-	header, err := wire.DataMuxHeader(flowID, len(payload))
+	header, err := wire.DataMuxHeader(st.flowID, len(payload))
 	if err != nil {
 		flow.sendSlot.add(1)
 		flow.sendCredit.add(charge)
@@ -288,13 +289,73 @@ func (s *shared) sendData(flowID uint32, payload []byte) error {
 		return err
 	}
 	copied := append([]byte(nil), payload...)
-	if err := s.sendOutbound(outbound{header: header, payload: copied, release: flow.sendSlot}); err != nil {
+	if err := s.sendOutbound(outbound{header: header, payload: copied, release: flow.sendSlot}, wait); err != nil {
 		flow.sendSlot.add(1)
 		flow.sendCredit.add(charge)
 		s.connSend.add(charge)
 		return err
 	}
 	return nil
+}
+
+func (st *Stream) acquireCredits(flow *flowState, charge int) error {
+	for {
+		if err := st.checkWriteDeadline(); err != nil {
+			return err
+		}
+		wait, deadline, closed := st.writeSnapshot()
+		if closed {
+			return errClosed
+		}
+		if err := flow.sendSlot.acquireUntil(1, st.shared.closedCh, wait, deadline); err != nil {
+			if err == errInterrupted {
+				continue
+			}
+			return err
+		}
+		break
+	}
+	for {
+		if err := st.checkWriteDeadline(); err != nil {
+			flow.sendSlot.add(1)
+			return err
+		}
+		wait, deadline, closed := st.writeSnapshot()
+		if closed {
+			flow.sendSlot.add(1)
+			return errClosed
+		}
+		if err := flow.sendCredit.acquireUntil(charge, st.shared.closedCh, wait, deadline); err != nil {
+			if err == errInterrupted {
+				continue
+			}
+			flow.sendSlot.add(1)
+			return err
+		}
+		break
+	}
+	for {
+		if err := st.checkWriteDeadline(); err != nil {
+			flow.sendSlot.add(1)
+			flow.sendCredit.add(charge)
+			return err
+		}
+		wait, deadline, closed := st.writeSnapshot()
+		if closed {
+			flow.sendSlot.add(1)
+			flow.sendCredit.add(charge)
+			return errClosed
+		}
+		if err := st.shared.connSend.acquireUntil(charge, st.shared.closedCh, wait, deadline); err != nil {
+			if err == errInterrupted {
+				continue
+			}
+			flow.sendSlot.add(1)
+			flow.sendCredit.add(charge)
+			return err
+		}
+		return nil
+	}
 }
 
 func writeFull(w io.Writer, p []byte) error {

@@ -979,6 +979,8 @@ func (f *nowuFlow) shutdown(err error) {
 		if f.idle != nil {
 			f.idle.Stop()
 		}
+		f.readDL.stop()
+		f.writeDL.stop()
 		f.mu.Unlock()
 		if f.ownsReassembly.Load() && f.session.reassembler != nil {
 			f.session.reassembler.RemoveFlow(f.flowID)

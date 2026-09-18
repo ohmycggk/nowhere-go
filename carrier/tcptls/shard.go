@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	carriermux "github.com/ohmycggk/nowhere-go/carrier/mux"
 	"github.com/ohmycggk/nowhere-go/wire"
@@ -14,6 +15,7 @@ import (
 // MaxMuxCarriers is the Nowhere 2 client pool cap for established or connecting
 // Mux TLS carriers in one session. Both logical directions share the pool.
 const MaxMuxCarriers = 8
+const muxDialTimeout = 15 * time.Second
 
 // MuxDirection is retained for API compatibility. Nowhere 2 uses one shared
 // full-duplex Mux pool, so uplink and downlink reservations compete together.
@@ -28,7 +30,9 @@ const (
 
 // MuxManager owns lazily opened Mux TLS carriers for one bundle session.
 type MuxManager struct {
-	cfg *Config
+	cfg    *Config
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
@@ -39,11 +43,12 @@ type muxShard struct {
 	mgr     *MuxManager
 	pending atomic.Int64
 
-	mu     sync.Mutex
-	handle *carriermux.Handle
-	err    error
-	ready  chan struct{}
-	once   sync.Once
+	mu        sync.Mutex
+	handle    *carriermux.Handle
+	err       error
+	ready     chan struct{}
+	readyOnce sync.Once
+	once      sync.Once
 }
 
 // NewMuxManager binds a TLS config to a shared Mux carrier pool.
@@ -51,7 +56,8 @@ func NewMuxManager(cfg *Config) (*MuxManager, error) {
 	if cfg == nil {
 		return nil, errors.New("nowhere: nil TCP carrier config")
 	}
-	return &MuxManager{cfg: cfg}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &MuxManager{cfg: cfg, ctx: ctx, cancel: cancel}, nil
 }
 
 // Open assigns flowID to a shared-pool carrier, dialing another if capacity remains.
@@ -102,7 +108,11 @@ func (m *MuxManager) Close() error {
 	m.closed = true
 	shards := append([]*muxShard(nil), m.shards...)
 	m.shards = nil
+	cancel := m.cancel
 	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	for _, shard := range shards {
 		shard.close()
 	}
@@ -259,7 +269,13 @@ func (s *muxShard) wait(ctx context.Context) (*carriermux.Handle, error) {
 
 func (s *muxShard) dial() {
 	s.once.Do(func() {
-		conn, err := dialMuxCarrier(context.Background(), s.mgr.cfg)
+		parent := context.Background()
+		if s.mgr != nil && s.mgr.ctx != nil {
+			parent = s.mgr.ctx
+		}
+		ctx, cancel := context.WithTimeout(parent, muxDialTimeout)
+		defer cancel()
+		conn, err := dialMuxCarrier(ctx, s.mgr.cfg)
 		if err != nil {
 			s.fail(err)
 			return
@@ -272,23 +288,38 @@ func (s *muxShard) dial() {
 		}
 		incoming.Discard()
 		s.mu.Lock()
+		if s.err != nil {
+			s.mu.Unlock()
+			handle.Close()
+			return
+		}
 		s.handle = handle
 		s.mu.Unlock()
-		close(s.ready)
+		s.finishReady()
 	})
 }
 
 func (s *muxShard) fail(err error) {
 	s.mu.Lock()
-	s.err = err
+	if s.err == nil {
+		s.err = err
+	}
 	s.mu.Unlock()
-	close(s.ready)
+	s.finishReady()
+}
+
+func (s *muxShard) finishReady() {
+	s.readyOnce.Do(func() { close(s.ready) })
 }
 
 func (s *muxShard) close() {
 	s.mu.Lock()
 	handle := s.handle
+	if s.err == nil && handle == nil {
+		s.err = net.ErrClosed
+	}
 	s.mu.Unlock()
+	s.finishReady()
 	if handle != nil {
 		handle.Close()
 	}

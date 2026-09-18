@@ -85,6 +85,46 @@ func TestQUICMuxAcquireAfterCloseInvalidatesRaw(t *testing.T) {
 	}
 }
 
+func TestQUICMuxStartReceiveLoopAfterCloseDoesNotPanic(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		raw := &muxLifecycleSession{receive: make(chan []byte)}
+		backend := &muxLifecycleBackend{}
+		muxBackend := &quicMuxBackend{
+			backend:          backend,
+			auth:             func(context.Context, carrier.QuicSession) (wire.AuthFrame, error) { return wire.AuthFrame{1}, nil },
+			maxUDPQueueBytes: 64,
+			maxPendingCloses: 4,
+			sessions:         make(map[carrier.QuicSession]*quicSessionMux),
+		}
+		session, err := newQUICSessionMux(muxBackend, raw, wire.AuthFrame{1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		muxBackend.sessions[raw] = session
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			session.close(net.ErrClosed)
+		}()
+		go func() {
+			defer wg.Done()
+			session.startReceiveLoop()
+		}()
+		wg.Wait()
+		select {
+		case <-session.loopDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("loopDone did not close")
+		}
+		select {
+		case <-session.sendLoopDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("sendLoopDone did not close")
+		}
+	}
+}
+
 func TestQUICMuxDropsDataBeforeReadyAndReleasesOnClose(t *testing.T) {
 	session := newTestQUICSessionMux(t, 64, 4)
 	flow, err := session.register(1)

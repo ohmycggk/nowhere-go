@@ -183,7 +183,7 @@ func testMuxEnabledBundleOpensTCPThroughPortal(t *testing.T, mixed bool) {
 			t.Logf("ServeTCP: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Log("ServeTCP still running after client close")
+		t.Fatal("ServeTCP still running after client close")
 	}
 }
 

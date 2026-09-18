@@ -23,6 +23,7 @@ func (h *Handler) handleMuxTCP(ctx context.Context, conn net.Conn, source net.Ad
 		return err
 	}
 	defer handle.Close()
+	defer incoming.Discard()
 
 	go func() {
 		if handle.IdleFor(ctx, carriermux.IdleTimeout) {

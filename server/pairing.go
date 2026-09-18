@@ -51,8 +51,10 @@ func (r *claimRegistry) SubmitTCPWithSource(ctx context.Context, sessionID wire.
 		return nil, err
 	}
 	if active.Open == nil || active.Attach == nil {
+		err := fmt.Errorf("%w: incomplete TCP pair", ErrInvalidHandler)
+		closeClaimedFlow(active, err)
 		active.Release()
-		return nil, fmt.Errorf("%w: incomplete TCP pair", ErrInvalidHandler)
+		return nil, err
 	}
 	return &splicedConn{
 		reader: active.Open.Stream, writer: active.Attach.Stream,

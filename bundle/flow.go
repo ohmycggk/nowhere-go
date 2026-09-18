@@ -132,6 +132,9 @@ func (b *CarrierBundle) prepareQUICStream(ctx context.Context, flowID wire.FlowI
 		}
 		stream, err := session.PrepareStream(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			if retries > 0 {
 				client.InvalidateSession(session)
 				continue

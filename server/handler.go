@@ -418,8 +418,10 @@ func (h *Handler) handleTCPFlowGeneration(ctx context.Context, conn net.Conn, so
 		routed = active.Duplex.Stream
 	} else {
 		if active.Open == nil || active.Attach == nil {
+			err := fmt.Errorf("%w: incomplete TCP pair", ErrInvalidHandler)
+			closeClaimedFlow(active, err)
 			active.Release()
-			return fmt.Errorf("%w: incomplete TCP pair", ErrInvalidHandler)
+			return err
 		}
 		routed = &splicedConn{
 			reader: active.Open.Stream, writer: active.Attach.Stream,

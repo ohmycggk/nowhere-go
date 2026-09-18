@@ -106,11 +106,9 @@ func (c *asyncUDPConn) runSetup(ctx context.Context) {
 		return
 	}
 	c.inner = pc
+	drained := c.snapshotSetupQueueLocked()
 	c.mu.Unlock()
 
-	// Deadlines set while setup was in flight never reached pc (inner was
-	// nil); propagate them now so blocked ReadFrom/WriteTo callers can time
-	// out as their callers intended.
 	if t := c.rd.get(); !t.IsZero() {
 		_ = pc.SetReadDeadline(t)
 	}
@@ -118,39 +116,51 @@ func (c *asyncUDPConn) runSetup(ctx context.Context) {
 		_ = pc.SetWriteDeadline(t)
 	}
 	close(c.ready)
-
-	// Drain queued first packets onto the live flow.
-	c.drainSetupQueue(pc)
+	c.flushSetupQueue(pc, drained)
 }
 
-// drainSetupQueue writes buffered first packets onto the live flow. A write
-// failure is terminal for the async conn: record setupErr and close the inner
-// PacketConn so the QUIC/UDP flow cannot linger until bundle shutdown.
-func (c *asyncUDPConn) drainSetupQueue(pc net.PacketConn) {
+func (c *asyncUDPConn) snapshotSetupQueueLocked() []queuedUDPPacket {
+	var drained []queuedUDPPacket
 	for {
+		select {
+		case pkt, ok := <-c.queue:
+			if !ok {
+				return drained
+			}
+			drained = append(drained, pkt)
+		default:
+			return drained
+		}
+	}
+}
+
+func (c *asyncUDPConn) flushSetupQueue(pc net.PacketConn, drained []queuedUDPPacket) {
+	for _, pkt := range drained {
 		select {
 		case <-c.closed:
 			return
-		case pkt, ok := <-c.queue:
-			if !ok {
-				return
-			}
-			if _, werr := pc.WriteTo(pkt.payload, pkt.addr); werr != nil {
-				c.mu.Lock()
-				if !c.closedFlag {
-					c.setupErr = werr
-					c.inner = nil
-					c.mu.Unlock()
-					_ = pc.Close()
-				} else {
-					c.mu.Unlock()
-				}
-				return
-			}
 		default:
+		}
+		if _, werr := pc.WriteTo(pkt.payload, pkt.addr); werr != nil {
+			c.mu.Lock()
+			if !c.closedFlag {
+				c.setupErr = werr
+				c.inner = nil
+				c.mu.Unlock()
+				_ = pc.Close()
+			} else {
+				c.mu.Unlock()
+			}
 			return
 		}
 	}
+}
+
+func (c *asyncUDPConn) drainSetupQueue(pc net.PacketConn) {
+	c.mu.Lock()
+	drained := c.snapshotSetupQueueLocked()
+	c.mu.Unlock()
+	c.flushSetupQueue(pc, drained)
 }
 
 func (c *asyncUDPConn) waitReady(ctx context.Context) error {
@@ -167,6 +177,24 @@ func (c *asyncUDPConn) waitReady(ctx context.Context) error {
 	}
 }
 
+func (c *asyncUDPConn) writeReady(p []byte, addr net.Addr) (int, error) {
+	c.mu.Lock()
+	inner := c.inner
+	err := c.setupErr
+	closed := c.closedFlag
+	c.mu.Unlock()
+	if closed {
+		return 0, net.ErrClosed
+	}
+	if err != nil {
+		return 0, err
+	}
+	if inner == nil {
+		return 0, net.ErrClosed
+	}
+	return inner.WriteTo(p, addr)
+}
+
 func (c *asyncUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if c.wd.expired() {
 		return 0, osErrDeadline()
@@ -175,40 +203,32 @@ func (c *asyncUDPConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	case <-c.closed:
 		return 0, net.ErrClosed
 	case <-c.ready:
-		c.mu.Lock()
-		inner := c.inner
+		return c.writeReady(p, addr)
+	default:
+	}
+	c.mu.Lock()
+	if c.closedFlag {
+		c.mu.Unlock()
+		return 0, net.ErrClosed
+	}
+	if c.setupErr != nil {
 		err := c.setupErr
 		c.mu.Unlock()
-		if err != nil {
-			return 0, err
-		}
-		if inner == nil {
-			return 0, net.ErrClosed
-		}
+		return 0, err
+	}
+	if c.inner != nil {
+		inner := c.inner
+		c.mu.Unlock()
 		return inner.WriteTo(p, addr)
+	}
+	payload := append([]byte(nil), p...)
+	select {
+	case c.queue <- queuedUDPPacket{payload: payload, addr: addr}:
+		c.mu.Unlock()
+		return len(p), nil
 	default:
-		payload := append([]byte(nil), p...)
-		select {
-		case c.queue <- queuedUDPPacket{payload: payload, addr: addr}:
-			return len(p), nil
-		default:
-			// Bounded queue full: drop like Rust try_send Full.
-			return len(p), nil
-		case <-c.closed:
-			return 0, net.ErrClosed
-		case <-c.ready:
-			c.mu.Lock()
-			inner := c.inner
-			err := c.setupErr
-			c.mu.Unlock()
-			if err != nil {
-				return 0, err
-			}
-			if inner == nil {
-				return 0, net.ErrClosed
-			}
-			return inner.WriteTo(p, addr)
-		}
+		c.mu.Unlock()
+		return len(p), nil
 	}
 }
 
