@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Mix remains a client-side policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. Optional `morph=1` sits below TLS/QUIC with no negotiation. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
+> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Mix remains a client-side policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. Optional `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract (64-byte TCP prelude, directional UDP keys) is incompatible with Nowhere 2.0.x peers, so upgrade both ends of every Morph-enabled hop together. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
 
 ---
 

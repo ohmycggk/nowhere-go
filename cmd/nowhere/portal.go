@@ -59,7 +59,7 @@ func runPortal(ctx context.Context, cfg appConfig, log *logger) error {
 		var listeners []*serverListener
 		for _, pc := range pcs {
 			if cfg.morph {
-				pc = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)).UDP)
+				pc = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), false)
 			}
 			ln, err := listenQUIC(pc, tlsCfg)
 			if err != nil {
@@ -180,7 +180,7 @@ func newBundle(key string, endpoint serviceEndpoint, up, down string, mux bundle
 			return nil, err
 		}
 		if enableMorph {
-			pc = morph.WrapPacketConn(pc, morph.Derive([]byte(key)).UDP)
+			pc = morph.WrapPacketConn(pc, morph.Derive([]byte(key)), true)
 		}
 		opts.QUIC = newClientBackend(udpAddr, tlsCfg, pc)
 		opts.PoolSize = 0

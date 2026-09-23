@@ -28,6 +28,44 @@ and all clients.
   dropping frames. Silent drops truncated payloads and stalled credit-window
   tests under load.
 
+## v2.1.0 - 2026-09-23
+
+### Changed
+
+- Align the Morph transform, Mux flow semantics, and lock metadata with
+  Nowhere v2.1.0 at upstream commit
+  `568031335b72a925e4904f15f8e39053ffc32866`. `morph=1` hops are
+  wire-incompatible with Nowhere 2.0.x peers; upgrade both ends of every
+  Morph-enabled hop together. `morph=0` connections keep their existing
+  wire contract.
+- Send a 64-byte opaque TCP prelude before the 12-byte Morph nonce, for a
+  76-byte client bootstrap. The default `low7` policy clears each prelude
+  byte's high bit; `NOW_MORPH_TCP_PRELUDE=full8` keeps all eight random
+  bits. Servers consume the prelude without interpreting it.
+- Derive directional UDP keys `udp c2s` and `udp s2c` from the Morph root
+  instead of one shared `udp` key; `WrapPacketConn` now keys datagrams by
+  client/server role.
+- Retain Mux flow state after the local application fully releases a stream
+  until both directions terminate. Peer DATA on retained flows is
+  window-checked, debited, and discarded while only connection credit
+  returns, so in-flight bytes stay bounded by the stream debit.
+- Report DATA for never-established, FIN-received, or fully retired flows as
+  a carrier error instead of silently ignoring it.
+- Mark local FIN state only after the FIN frame reaches the wire and retire
+  retained state as soon as both sides finish.
+- Count only application-owned flows for `ActiveStreams`, idle detection,
+  and pool pressure; the 4,096-state ceiling covers active plus retained
+  states.
+- Skip Mux carriers that still retain a requested flow ID, and retire an
+  idle carrier when the pool is full with no eligible carrier, so flow-ID
+  reuse cannot reopen retired protocol state.
+
+### Documentation
+
+- Re-pin the vector manifest metadata and tree hash for the Nowhere v2.1.0
+  corpus; the nw2 auth, flow, datagram, UoT, result, and mux vectors are
+  byte-identical to v2.0.0.
+
 ## v2.0.0 - 2026-09-16
 
 ### Changed
