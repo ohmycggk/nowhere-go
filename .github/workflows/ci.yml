@@ -110,3 +110,46 @@ jobs:
         run: go test ./wire -run=^$ -fuzz=^FuzzReadUDPPacket$ -fuzztime=30s
       - name: DATAGRAM
         run: go test ./wire -run=^$ -fuzz=^FuzzDecodeUDPFrame$ -fuzztime=30s
+
+  freebsd:
+    name: freebsd test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Resolve Go tarball version
+        id: go
+        run: echo "version=$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+      - name: Test and build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.1"
+          usesh: true
+          prepare: |
+            set -eu
+            fetch -o /tmp/go.tgz "https://go.dev/dl/${{ steps.go.outputs.version }}.freebsd-amd64.tar.gz"
+            rm -rf /usr/local/go
+            tar -C /usr/local -xzf /tmp/go.tgz
+          run: |
+            set -eu
+            export PATH="/usr/local/go/bin:${PATH}"
+            go version
+            go test -count=1 ./...
+            go vet ./...
+            go build -o /tmp/nowhere-check ./cmd/nowhere-check
+            /tmp/nowhere-check
+            (
+              cd cmd/nowhere
+              GOWORK=off go test ./...
+              GOWORK=off CGO_ENABLED=0 go build -o /tmp/nowhere .
+            )
+            /tmp/nowhere -h
+            CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -o /tmp/nowhere-check-arm64 ./cmd/nowhere-check
+            (
+              cd cmd/nowhere
+              GOWORK=off CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -o /tmp/nowhere-arm64 .
+            )

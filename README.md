@@ -297,7 +297,7 @@ go run ./cmd/nowhere-check            # wire vectors + self-check
 go run ./cmd/nowhere-check -version
 ```
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.26.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`. The Portal CLI (`cmd/nowhere`) needs Go 1.26 because it vendors [quic-go](https://github.com/quic-go/quic-go) v0.62.0; the 1.20.x job tests the library only.
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.26.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`. The Portal CLI (`cmd/nowhere`) needs Go 1.26 because it vendors [quic-go](https://github.com/quic-go/quic-go) v0.62.0; the 1.20.x job tests the library only. A FreeBSD 15.1 amd64 job runs the same single-version test, vet, and CLI checks, and cross-builds `freebsd/arm64`. Race, fuzz, and benchmark jobs stay on Linux.
 
 The standalone **Portal / Vector** binary lives in [`cmd/nowhere`](cmd/nowhere). It accepts the same `portal://` and `vector://` URLs as the Rust `nowhere` CLI (TUI is not included).
 
@@ -307,7 +307,7 @@ make nowhere
 ./nowhere 'vector://secret@127.0.0.1:2000?up=tcp&down=tcp&socks=127.0.0.1:1080'
 ```
 
-Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` and `nowhere-check` binaries for Linux, Windows, and macOS (`amd64` and `arm64`) plus `SHA256SUMS`. Reproduce locally with `make dist`. Consume the library with `go get`.
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` and `nowhere-check` binaries for Linux, Windows, macOS, and FreeBSD (`amd64` and `arm64`) plus `SHA256SUMS`. Reproduce locally with `make dist`. Consume the library with `go get`.
 
 ```bash
 go get github.com/ohmycggk/nowhere-go@v2.0.0

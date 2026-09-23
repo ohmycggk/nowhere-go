@@ -370,10 +370,30 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("condition not met before timeout")
 }
 
-func (h *Handle) flowLocked(flowID uint32) *flowState {
+// Flow-state assertions must read flowState fields while holding flowsMu,
+// so each check evaluates entirely inside the lock instead of inspecting a
+// pointer returned from it.
+func (h *Handle) hasFlow(flowID uint32) bool {
 	h.shared.flowsMu.Lock()
 	defer h.shared.flowsMu.Unlock()
-	return h.shared.flows[flowID]
+	return h.shared.flows[flowID] != nil
+}
+
+func (h *Handle) flowRetainedLocallyFinished(flowID uint32) bool {
+	h.shared.flowsMu.Lock()
+	defer h.shared.flowsMu.Unlock()
+	flow := h.shared.flows[flowID]
+	return flow != nil && flow.localFinSent && flow.localParts == 0
+}
+
+func (h *Handle) flowReceiveCredit(flowID uint32) (int, bool) {
+	h.shared.flowsMu.Lock()
+	defer h.shared.flowsMu.Unlock()
+	flow, ok := h.shared.flows[flowID]
+	if !ok {
+		return 0, false
+	}
+	return flow.receiveCredit, true
 }
 
 func (h *Handle) connRecvUnits() int {
@@ -469,8 +489,8 @@ func TestAbandonedReadHalfReturnsFullCredit(t *testing.T) {
 	}
 	maxStream := creditUnits(DefaultConfig().StreamWindowBytes)
 	waitFor(t, 2*time.Second, func() bool {
-		flow := client.flowLocked(12)
-		return flow != nil && flow.receiveCredit == maxStream
+		credit, ok := client.flowReceiveCredit(12)
+		return ok && credit == maxStream
 	})
 	if client.IsClosed() || server.IsClosed() {
 		t.Fatal("carrier closed after DATA on an abandoned read half")
@@ -523,8 +543,7 @@ func TestDiscardedDataRetainsFlowUntilPeerFin(t *testing.T) {
 	// The FIN is on the wire while the flow stays retained: the peer has
 	// not half-closed yet, so protocol state survives for reverse DATA.
 	waitFor(t, 2*time.Second, func() bool {
-		flow := client.flowLocked(5)
-		return flow != nil && flow.localFinSent && flow.localParts == 0
+		return client.flowRetainedLocallyFinished(5)
 	})
 	if client.CanOpenFlow(5) {
 		t.Fatal("retained flow state still admits the same flow ID")
@@ -540,8 +559,8 @@ func TestDiscardedDataRetainsFlowUntilPeerFin(t *testing.T) {
 	maxStream := creditUnits(DefaultConfig().StreamWindowBytes)
 	maxConn := creditUnits(DefaultConfig().ConnectionWindowBytes)
 	waitFor(t, 2*time.Second, func() bool {
-		flow := client.flowLocked(5)
-		return flow != nil && flow.receiveCredit == maxStream-2
+		credit, ok := client.flowReceiveCredit(5)
+		return ok && credit == maxStream-2
 	})
 	if got := client.connRecvUnits(); got != maxConn {
 		t.Fatalf("connection credit = %d, want full %d", got, maxConn)
@@ -556,7 +575,7 @@ func TestDiscardedDataRetainsFlowUntilPeerFin(t *testing.T) {
 	}
 	writeFrame(t, raw, finHeader, nil)
 	waitFor(t, 2*time.Second, func() bool {
-		return client.flowLocked(5) == nil
+		return !client.hasFlow(5)
 	})
 	if !client.CanOpenFlow(5) {
 		t.Fatal("retired flow state still refuses the flow ID")
@@ -583,7 +602,7 @@ func TestResetRemovesFlowImmediately(t *testing.T) {
 	}
 	writeFrame(t, raw, resetHeader, nil)
 	waitFor(t, 2*time.Second, func() bool {
-		return client.flowLocked(6) == nil
+		return !client.hasFlow(6)
 	})
 	if client.IsClosed() {
 		t.Fatal("carrier closed by peer RESET")

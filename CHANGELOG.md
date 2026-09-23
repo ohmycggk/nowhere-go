@@ -15,6 +15,9 @@ and all clients.
 - Portal SOCKS5 outbound (`portal://...?socks=host:port`) for TCP CONNECT and
   UDP ASSOCIATE. There is no direct fallback; `socks` and `next` stay mutually
   exclusive.
+- Run library and Portal CLI tests on FreeBSD 15.1 amd64, and publish
+  `nowhere` and `nowhere-check` FreeBSD `amd64` and `arm64` binaries from
+  `make dist`.
 
 ### Changed
 

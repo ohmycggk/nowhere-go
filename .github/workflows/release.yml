@@ -33,7 +33,7 @@ jobs:
         run: cd cmd/nowhere && GOWORK=off go test ./...
 
   dist:
-    name: Portal/Vector linux / windows / darwin binaries
+    name: Portal/Vector linux / windows / darwin / freebsd binaries
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
