@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"time"
@@ -66,25 +67,52 @@ func selfSignedCert() (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-func clientTLSConfig(sni, pin string) (*tls.Config, error) {
+func clientTLSConfig(sni, pin, host string) (*tls.Config, error) {
+	serverName := sni
+	if serverName == "" {
+		serverName = host
+	}
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		MaxVersion: tls.VersionTLS13,
+		NextProtos: []string{wire.DefaultALPN},
+		ServerName: serverName,
+	}
 	normalized, err := wire.ParseCertificatePin(pin)
 	if err != nil {
 		return nil, err
 	}
-	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		MaxVersion:         tls.VersionTLS13,
-		NextProtos:         []string{wire.DefaultALPN},
-		InsecureSkipVerify: sni == "" && normalized == "",
-		ServerName:         sni,
-	}
 	if normalized != "" {
+		// Pinned verification: skip chain/CA/host checks but keep the pin
+		// verifier so the handshake signature is still validated.
 		cfg.InsecureSkipVerify = true
-		cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			return wire.VerifyLeafCertSHA256(rawCerts, normalized)
+		verifier, err := wire.PeerCertificatePinVerifier(normalized)
+		if err != nil {
+			return nil, err
 		}
+		cfg.VerifyPeerCertificate = verifier
+		return cfg, nil
 	}
+	// Without a pin the server name and full system-CA chain are verified.
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("client TLS policy initialization failed: system root loading failed: %w", err)
+	}
+	if roots == nil {
+		return nil, fmt.Errorf("client TLS policy initialization failed: no system trust roots available")
+	}
+	cfg.RootCAs = roots
 	return cfg, nil
+}
+
+// serverCertFingerprintHex returns the lowercase-hex SHA-256 of the leaf
+// certificate a server config presents. Portal logs this at startup as the
+// canonical way to obtain a pin= value.
+func serverCertFingerprintHex(cfg *tls.Config) (string, error) {
+	if len(cfg.Certificates) == 0 || len(cfg.Certificates[0].Certificate) == 0 {
+		return "", fmt.Errorf("no server certificate available")
+	}
+	return wire.LeafCertificateSHA256Hex(cfg.Certificates[0].Certificate[0]), nil
 }
 
 type stdTLSDialer struct{ cfg *tls.Config }
@@ -110,10 +138,4 @@ func (d stdTLSDialer) DialTLSConn(ctx context.Context, conn net.Conn) (wire.Hand
 			Exporter:       exporter,
 		},
 	}, nil
-}
-
-type netDialer struct{ d net.Dialer }
-
-func (n netDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return n.d.DialContext(ctx, network, address)
 }

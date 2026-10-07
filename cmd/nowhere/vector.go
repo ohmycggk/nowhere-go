@@ -13,7 +13,8 @@ import (
 )
 
 func runVector(ctx context.Context, cfg appConfig, log *logger) error {
-	client, err := newBundle(cfg.key, cfg.endpoint, cfg.up, cfg.down, cfg.mux, cfg.sni, cfg.pin, cfg.morph, log)
+	fd := familyDialer{policy: cfg.dial}
+	client, err := newBundle(cfg.key, cfg.endpoint, cfg.up, cfg.down, cfg.mux, cfg.sni, cfg.pin, cfg.morph, fd, log)
 	if err != nil {
 		return err
 	}
@@ -59,27 +60,59 @@ func listenSOCKS(addr string, log *logger) (net.Listener, []string, error) {
 	return listenAll("tcp", listenHosts(host, family), port, log)
 }
 
+// setupWithShutdown races a blocking SOCKS5 setup step against the shutdown
+// context so a SIGINT cancels a pending auth read, request read, OpenTCP, or
+// reply write instead of exiting mid-setup. When shutdown wins the returned
+// error is non-nil and ctx.Err() is set; the caller returns and the deferred
+// conn.Close unblocks the abandoned goroutine (bounded).
+func setupWithShutdown(ctx context.Context, fn func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
+}
+
 func serveSOCKSClient(ctx context.Context, client *bundle.CarrierBundle, conn net.Conn, user, pass string, log *logger) {
 	defer conn.Close()
-	if err := socksHandshake(conn, user, pass); err != nil {
-		log.debug("socks handshake: %v", err)
-		return
-	}
-	cmd, target, err := socksReadRequest(conn)
-	if err != nil {
-		log.debug("socks request: %v", err)
+	var cmd byte
+	var target wire.Target
+	if err := setupWithShutdown(ctx, func() error {
+		if err := socksHandshake(conn, user, pass); err != nil {
+			return err
+		}
+		var err error
+		cmd, target, err = socksReadRequest(conn)
+		return err
+	}); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.debug("socks setup: %v", err)
 		return
 	}
 	switch cmd {
 	case socksCmdConnect:
-		remote, err := client.OpenTCP(ctx, target)
-		if err != nil {
+		var remote net.Conn
+		if err := setupWithShutdown(ctx, func() error {
+			var err error
+			remote, err = client.OpenTCP(ctx, target)
+			return err
+		}); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			_ = socksReply(conn, 0x05, conn.LocalAddr())
 			log.debug("open tcp %v: %v", targetAddr(target), err)
 			return
 		}
 		defer remote.Close()
-		if err := socksReply(conn, 0x00, conn.LocalAddr()); err != nil {
+		if err := setupWithShutdown(ctx, func() error {
+			return socksReply(conn, 0x00, conn.LocalAddr())
+		}); err != nil {
 			return
 		}
 		relay(conn, remote)
@@ -213,4 +246,3 @@ func targetHost(t wire.Target) string {
 	}
 	return t.Addr.String()
 }
-

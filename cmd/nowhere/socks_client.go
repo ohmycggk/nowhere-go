@@ -19,7 +19,7 @@ type socksDialer struct {
 	addr string
 	user string
 	pass string
-	d    net.Dialer
+	fd   familyDialer
 }
 
 func (s *socksDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -38,7 +38,7 @@ func (s *socksDialer) dialTCP(ctx context.Context, address string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
-	conn, err := s.d.DialContext(ctx, "tcp", s.addr)
+	conn, err := s.fd.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (s *socksDialer) dialUDP(ctx context.Context, address string) (net.Conn, er
 	if err != nil {
 		return nil, err
 	}
-	control, err := s.d.DialContext(ctx, "tcp", s.addr)
+	control, err := s.fd.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (s *socksDialer) dialUDP(ctx context.Context, address string) (net.Conn, er
 		}
 	}
 	relay := net.JoinHostPort(bindHost, strconv.Itoa(bindPort))
-	udp, err := net.Dial("udp", relay)
+	udp, err := s.fd.DialContext(ctx, "udp", relay)
 	if err != nil {
 		return nil, err
 	}

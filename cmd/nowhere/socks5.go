@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	socksVer5      = 0x05
+	socksVer5       = 0x05
 	socksCmdConnect = 0x01
 	socksCmdUDP     = 0x03
 	socksAuthNone   = 0x00

@@ -17,7 +17,7 @@ type logger struct {
 func newLogger(level logLevel) *logger { return &logger{level: level} }
 
 func (l *logger) enabled(level logLevel) bool {
-	return l != nil && l.level != logNone && (l.level == logEvent || level <= l.level)
+	return l != nil && l.level != logNone && level <= l.level
 }
 
 func (l *logger) printf(level logLevel, format string, args ...any) {

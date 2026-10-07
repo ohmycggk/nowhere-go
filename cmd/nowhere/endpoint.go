@@ -45,17 +45,17 @@ func parseServiceEndpoint(u *url.URL, allowWildcard bool, context string) (servi
 	var tcp, udp *carrierEndpoint
 	if u.Path == "" || u.Path == "/" {
 		if u.Port() == "" {
-			return serviceEndpoint{}, fmt.Errorf("%s: missing port", context)
+			return serviceEndpoint{}, fmt.Errorf("%s: compact endpoint requires a port in 1..=65535", context)
 		}
 		port, err := strconv.Atoi(u.Port())
 		if err != nil || port <= 0 || port > 65535 {
-			return serviceEndpoint{}, fmt.Errorf("%s: invalid port", context)
+			return serviceEndpoint{}, fmt.Errorf("%s: compact endpoint requires a port in 1..=65535", context)
 		}
 		ep := carrierEndpoint{port: port, family: familyAny}
 		tcp, udp = &ep, &ep
 	} else {
 		if u.Port() != "" {
-			return serviceEndpoint{}, fmt.Errorf("%s: choose either HOST:PORT or HOST/CARRIER:PORT", context)
+			return serviceEndpoint{}, fmt.Errorf("%s: choose either HOST:PORT or HOST/CARRIER:PORT; authority port and carrier path cannot be combined", context)
 		}
 		var err error
 		tcp, udp, err = parseCarrierPath(u.Path, context)
@@ -75,38 +75,43 @@ func nilEndpoint() serviceEndpoint { return serviceEndpoint{} }
 func parseCarrierPath(path, context string) (*carrierEndpoint, *carrierEndpoint, error) {
 	path = strings.TrimPrefix(path, "/")
 	if path == "" || strings.HasSuffix(path, "/") {
-		return nil, nil, fmt.Errorf("%s: empty or trailing carrier path", context)
+		return nil, nil, fmt.Errorf("%s: carrier path must not contain empty segments or a trailing slash", context)
 	}
 	var tcp, udp *carrierEndpoint
 	for _, seg := range strings.Split(path, "/") {
 		if seg == "" {
-			return nil, nil, fmt.Errorf("%s: empty carrier path segment", context)
+			return nil, nil, fmt.Errorf("%s: carrier path must not contain empty segments or a trailing slash", context)
 		}
 		name, portStr, ok := strings.Cut(seg, ":")
 		if !ok || portStr == "" {
-			return nil, nil, fmt.Errorf("%s: invalid carrier segment %q", context, seg)
+			return nil, nil, fmt.Errorf("%s: carrier segment must use CARRIER:PORT", context)
+		}
+		for i := 0; i < len(portStr); i++ {
+			if portStr[i] < '0' || portStr[i] > '9' {
+				return nil, nil, fmt.Errorf("%s: carrier port must contain decimal digits only", context)
+			}
 		}
 		port, err := strconv.Atoi(portStr)
 		if err != nil || port <= 0 || port > 65535 {
-			return nil, nil, fmt.Errorf("%s: invalid port in %q", context, seg)
+			return nil, nil, fmt.Errorf("%s: carrier port must be in 1..=65535", context)
 		}
 		switch name {
 		case "tcp", "tcp4", "tcp6":
 			if tcp != nil {
-				return nil, nil, fmt.Errorf("%s: duplicate TCP carrier", context)
+				return nil, nil, fmt.Errorf("%s: TCP carrier is declared more than once", context)
 			}
 			tcp = &carrierEndpoint{port: port, family: familyFromName(name)}
 		case "udp", "udp4", "udp6":
 			if udp != nil {
-				return nil, nil, fmt.Errorf("%s: duplicate UDP carrier", context)
+				return nil, nil, fmt.Errorf("%s: UDP carrier is declared more than once", context)
 			}
 			udp = &carrierEndpoint{port: port, family: familyFromName(name)}
 		default:
-			return nil, nil, fmt.Errorf("%s: unknown carrier %q", context, name)
+			return nil, nil, fmt.Errorf("%s: unknown carrier; expected tcp, tcp4, tcp6, udp, udp4, or udp6", context)
 		}
 	}
 	if tcp == nil && udp == nil {
-		return nil, nil, fmt.Errorf("%s: no carriers declared", context)
+		return nil, nil, fmt.Errorf("%s: carrier path must not contain empty segments or a trailing slash", context)
 	}
 	return tcp, udp, nil
 }
@@ -132,10 +137,10 @@ func (e serviceEndpoint) validateLiteralFamilies(context string) error {
 			continue
 		}
 		if ep.family == familyV4 && ip.To4() == nil {
-			return fmt.Errorf("%s: address family does not match host %s", context, ip)
+			return fmt.Errorf("%s: address family does not match host", context)
 		}
 		if ep.family == familyV6 && ip.To4() != nil {
-			return fmt.Errorf("%s: address family does not match host %s", context, ip)
+			return fmt.Errorf("%s: address family does not match host", context)
 		}
 	}
 	return nil

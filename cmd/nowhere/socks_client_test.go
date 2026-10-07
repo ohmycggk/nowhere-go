@@ -51,14 +51,14 @@ func TestSocksDialerTCPConnect(t *testing.T) {
 }
 
 func TestParsePortalSOCKSOutbound(t *testing.T) {
-	cfg, err := parseCommandURL("portal://secret@127.0.0.1:2000?socks=user:pass@127.0.0.1:1080")
+	cfg, err := parseCommandURL("portal://" + testListenerKey + "@127.0.0.1:2000?socks=user:pass@127.0.0.1:1080")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.socks != "127.0.0.1:1080" || cfg.socksUser != "user" || cfg.socksPass != "pass" {
 		t.Fatalf("%+v", cfg)
 	}
-	if _, err := parseCommandURL("portal://secret@127.0.0.1:2000?socks=127.0.0.1:1080&next=k@h:1"); err == nil {
+	if _, err := parseCommandURL("portal://" + testListenerKey + "@127.0.0.1:2000?socks=127.0.0.1:1080&next=" + testNextKey + "@h:1"); err == nil {
 		t.Fatal("socks+next should fail")
 	}
 }

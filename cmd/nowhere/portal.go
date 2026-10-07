@@ -22,6 +22,11 @@ func runPortal(ctx context.Context, cfg appConfig, log *logger) error {
 	if err != nil {
 		return err
 	}
+	if fp, err := serverCertFingerprintHex(tlsCfg); err == nil {
+		log.info("TLS certificate SHA-256 fingerprint: %s", fp)
+	} else {
+		log.warn("TLS certificate fingerprint unavailable: %v", err)
+	}
 	networks := make([]server.Network, 0, 2)
 	if cfg.endpoint.hasTCP() {
 		networks = append(networks, server.NetworkTCP)
@@ -98,20 +103,17 @@ func runPortal(ctx context.Context, cfg appConfig, log *logger) error {
 }
 
 func portalUpstream(cfg appConfig, log *logger) (server.Upstream, func(), error) {
+	fd := familyDialer{policy: cfg.dial}
 	if cfg.next == nil {
-		d := net.Dialer{}
-		if ip := net.ParseIP(cfg.dial); ip != nil {
-			d.LocalAddr = &net.TCPAddr{IP: ip}
-		}
 		if cfg.socks != "" {
 			log.info("portal outbound socks %s", cfg.socks)
 			return server.NewDialUpstream(&socksDialer{
-				addr: cfg.socks, user: cfg.socksUser, pass: cfg.socksPass, d: d,
+				addr: cfg.socks, user: cfg.socksUser, pass: cfg.socksPass, fd: fd,
 			}), nil, nil
 		}
-		return server.NewDialUpstream(&d), nil, nil
+		return server.NewDialUpstream(fd), nil, nil
 	}
-	client, err := newBundle(cfg.next.key, cfg.next.endpoint, cfg.up, cfg.down, cfg.mux, cfg.sni, cfg.pin, cfg.morph, log)
+	client, err := newBundle(cfg.next.key, cfg.next.endpoint, cfg.up, cfg.down, cfg.mux, cfg.sni, cfg.pin, cfg.morph, fd, log)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,28 +125,23 @@ func portalUpstream(cfg appConfig, log *logger) (server.Upstream, func(), error)
 	return up, func() { _ = client.Close() }, nil
 }
 
-func newBundle(key string, endpoint serviceEndpoint, up, down string, mux bundle.MuxMode, sni, pin string, enableMorph bool, log *logger) (*bundle.CarrierBundle, error) {
+func newBundle(key string, endpoint serviceEndpoint, up, down string, mux bundle.MuxMode, sni, pin string, enableMorph bool, fd familyDialer, log *logger) (*bundle.CarrierBundle, error) {
 	creds, err := wire.NewCredentials(key)
 	if err != nil {
 		return nil, err
 	}
-	tlsCfg, err := clientTLSConfig(sni, pin)
+	tlsCfg, err := clientTLSConfig(sni, pin, endpoint.host)
 	if err != nil {
 		return nil, err
 	}
-	upC, downC, mixUp, mixDown := routeCarriers(up, down)
-	usesTCP := endpoint.hasTCP() && (up != "udp" || down != "udp" || mixUp || mixDown)
-	usesQUIC := endpoint.hasUDP() && (up != "tcp" || down != "tcp" || mixUp || mixDown)
-	if mixUp || mixDown {
-		usesTCP, usesQUIC = endpoint.hasTCP(), endpoint.hasUDP()
-	}
+	upC, downC := routeCarriers(up, down)
+	usesTCP := endpoint.hasTCP() && (up != "udp" || down != "udp")
+	usesQUIC := endpoint.hasUDP() && (up != "tcp" || down != "tcp")
 
 	opts := bundle.BundleOptions{
 		Credentials: creds,
 		Up:          upC,
 		Down:        downC,
-		MixUp:       mixUp,
-		MixDown:     mixDown,
 		Mux:         mux,
 		Observer:    log,
 	}
@@ -159,7 +156,7 @@ func newBundle(key string, endpoint serviceEndpoint, up, down string, mux bundle
 		}
 		tcp, err := tcptls.NewConfig(tcptls.TCPOptions{
 			Address:        tcpAddr,
-			Dialer:         netDialer{},
+			Dialer:         fd,
 			TLSDialer:      stdTLSDialer{cfg: tlsCfg},
 			Observer:       log,
 			MorphSharedKey: morphKey,
@@ -175,7 +172,7 @@ func newBundle(key string, endpoint serviceEndpoint, up, down string, mux bundle
 			return nil, fmt.Errorf("UDP carrier required")
 		}
 		var pc net.PacketConn
-		pc, err = net.ListenPacket("udp", "")
+		pc, err = fd.listenPacket(udpAddr)
 		if err != nil {
 			return nil, err
 		}
