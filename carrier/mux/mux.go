@@ -309,7 +309,7 @@ func (h *Handle) OpenStream(flowID uint32) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.shared.commitOpen(nil, stream); err != nil {
+	if err := h.shared.commitOpen(context.Background(), stream); err != nil {
 		return nil, err
 	}
 	return stream, nil
