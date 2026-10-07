@@ -15,6 +15,22 @@ make dist
 
 Changes to pairing, session, pool, or close ownership require deterministic cancellation/timeout tests. Runtime packages must retain zero third-party dependencies.
 
+## Re-pinning the upstream lock
+
+`UPSTREAM.lock` records the aligned Nowhere release (version, commit, protocol
+hash, vector-tree hash). To re-pin against a local Nowhere checkout:
+
+```sh
+make upstream-lock   # or: scripts/generate-upstream-lock.sh /path/to/Nowhere
+```
+
+`protocol_sha256` is a `sha256-tree-v1` hash over the wire-defining Rust sources
+only (`src/protocol/**`, `src/mux/wire.rs`, `src/transport/morph.rs`,
+`src/transport/morph/**`), so it changes exactly when the wire contract does;
+the Rust repository ships no such tooling. Run the script after editing
+`testdata/vectors/manifest.json` so the vector-tree hash tracks the corpus, and
+commit the lock and `internal/upstreamlock/generated.go` together.
+
 ## Documentation and public API
 
 - Keep README examples aligned with the current public API. Prefer a companion

@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Mix remains a client-side policy that resolves to TT, TQ, QT, or QQ before FlowHeader; `mix/mix` is TT or QQ. Optional `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract (64-byte TCP prelude, directional UDP keys) is incompatible with Nowhere 2.0.x peers, so upgrade both ends of every Morph-enabled hop together. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
+> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Optional `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract (64-byte TCP prelude, directional UDP keys) is incompatible with Nowhere 2.0.x peers, so upgrade both ends of every Morph-enabled hop together. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
 
 ---
 
@@ -94,9 +94,9 @@ if err != nil {
 up, down := wire.CarrierTLSTCP, wire.CarrierQUIC
 b, err := bundle.NewCarrierBundle(bundle.BundleOptions{
 	TCP:         tcp,
-	QUIC:        hostQuicBackend, // required when Up, Down, or mix can select QUIC
+	QUIC:        hostQuicBackend, // required when Up or Down selects QUIC
 	Credentials: credentials,     // bundle owns v1.5 carrier authentication
-	PoolSize:    0,               // required when either direction uses QUIC, mix, or Mux=1
+	PoolSize:    0,               // required when either direction uses QUIC or Mux=1
 	Up:          up,
 	Down:        down,
 	Mux:         bundle.MuxDisabled, // MuxEnabled originates marked TLS shards
@@ -117,13 +117,13 @@ See [`bundle/example_test.go`](bundle/example_test.go) for a compile-checked
 `tcp/tcp` constructor example. Host adapters remain responsible for concrete
 dialer, TLS, and QUIC implementations.
 
-Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. Set `MixUp` and/or `MixDown` for the 1.8.3 `tcp|udp|mix` matrix; `mix/mix` resolves only to `tcp/tcp` or `udp/udp`. Mix is client-side: the primary pair has a one-second preparation budget, then the other allowed pair is tried once with a new flow ID. Starting a FlowHeader or Target write commits the flow. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while mixed-carrier flows use `OPEN` plus `ATTACH`. `Mux` defaults to dedicated TLS lanes. `MuxEnabled` writes AuthFrame + `0xff` and multiplexes logical streams; Portal auto-detects both on the same TLS listener. QUIC never uses TLS Mux frames. `udp/udp&mux=1` canonicalizes to `mux=0`.
+Supported `Up`/`Down` pairs: `tcp/tcp`, `udp/udp`, `tcp/udp`, `udp/tcp`. `Up` and `Down` accept `tcp` or `udp` only; each direction always uses the carrier it names, and FlowHeader carries the resolved pair. Every logical TCP or UDP flow starts with a typed FLOW envelope; symmetric flows use `DUPLEX`, while split-carrier flows use `OPEN` plus `ATTACH`. `Mux` defaults to dedicated TLS lanes. `MuxEnabled` writes AuthFrame + `0xff` and multiplexes logical streams; Portal auto-detects both on the same TLS listener. QUIC never uses TLS Mux frames. `udp/udp&mux=1` canonicalizes to `mux=0`.
 
 ---
 
 ## Inbound (server)
 
-The `server` package is a full inbound implementation: auth, FLOW/setup-result handling, typed UoT, mixed-carrier pairing, NOWU reassembly, QUIC session replacement, and upstream handoff.
+The `server` package is a full inbound implementation: auth, FLOW/setup-result handling, typed UoT, split-carrier pairing, NOWU reassembly, QUIC session replacement, and upstream handoff.
 
 Two integration styles:
 
@@ -244,7 +244,7 @@ five-second default automatically.
 
 - Authentication: 5 seconds with `[0.8, 1.2]` jitter; request idle: 40 seconds
 - Pre-auth admission: 256 global, 32 per source (IPv4 `/32`, IPv6 `/64`)
-- Pending mixed-carrier flows: 1024 per session; pair timeout: 15 seconds
+- Pending split-carrier flows: 1024 per session; pair timeout: 15 seconds
 - UDP: 256 flows/session, 64 queued packets/flow, 4 MiB queued/session, 120 second idle
 - Authenticated idle TCP halves: 4096; active QUIC sessions: 1024
 - A matching QUIC session ID replaces the previous carrier and cancels its pending/active flows
@@ -299,13 +299,20 @@ go run ./cmd/nowhere-check -version
 
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.26.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`. The Portal CLI (`cmd/nowhere`) needs Go 1.26 because it vendors [quic-go](https://github.com/quic-go/quic-go) v0.62.0; the 1.20.x job tests the library only. A FreeBSD 15.1 amd64 job runs the same single-version test, vet, and CLI checks, and cross-builds `freebsd/arm64`. Race, fuzz, and benchmark jobs stay on Linux.
 
-The standalone **Portal / Vector** binary lives in [`cmd/nowhere`](cmd/nowhere). It accepts the same `portal://` and `vector://` URLs as the Rust `nowhere` CLI (TUI is not included).
+The standalone **Portal / Vector** binary lives in [`cmd/nowhere`](cmd/nowhere). It accepts the same `portal://` and `vector://` URLs as the Rust `nowhere` CLI, plus the `generate-key`, `fingerprint`, and `probe` toolbox subcommands (the TUI and `status` are not included).
 
 ```bash
 make nowhere
-./nowhere 'portal://secret@:2000?log=info'
-./nowhere 'vector://secret@127.0.0.1:2000?up=tcp&down=tcp&socks=127.0.0.1:1080'
+./nowhere generate-key
+./nowhere 'portal://0f8c3b9a2d6e4f1c8a5b7d3e9c0a1f2b@:2000?log=info'
+./nowhere 'vector://0f8c3b9a2d6e4f1c8a5b7d3e9c0a1f2b@127.0.0.1:2000?up=tcp&down=tcp&socks=127.0.0.1:1080'
 ```
+
+Portal listener and `next` hop keys must be 32–64 lowercase hexadecimal characters
+(`generate-key` prints one); Vector client keys stay free-form. Client carriers
+verify the Portal certificate against the system roots and the endpoint host
+name unless `pin=<sha256>` is set — `fingerprint` prints the leaf certificate
+SHA-256 of a `nowhere://` share link to obtain one.
 
 Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` and `nowhere-check` binaries for Linux, Windows, macOS, and FreeBSD (`amd64` and `arm64`) plus `SHA256SUMS`. Reproduce locally with `make dist`. Consume the library with `go get`.
 

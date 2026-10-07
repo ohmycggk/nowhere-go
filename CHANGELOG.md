@@ -12,6 +12,24 @@ and all clients.
 
 ### Added
 
+- Alignment with upstream Nowhere v2.2.1
+  (commit `0000696910dc9ee56c3ec87995a0b1ca8e4fc11b`). The `nw2` wire contract
+  is unchanged, so `nowhere-go` stays interoperable with Nowhere 2.0.x–2.2.x
+  peers; `UPSTREAM.lock` and the vector manifest are re-pinned.
+- Toolbox subcommands: `nowhere generate-key` prints one 32-character lowercase
+  hex key; `nowhere fingerprint` accepts `nowhere://` share links and prints the
+  leaf certificate SHA-256 suitable for `pin=`; `nowhere probe <vector-url>
+  <host:port>` opens one real TCP flow through the full client stack and exits 0
+  only when the setup result is `OK`. Upstream's `nowhere status` and the TUI
+  are deliberately not ported because the Go build has no telemetry registry or
+  IPC (recorded as a known divergence).
+- `dial4=<ipv4|auto>` and `dial6=<ipv6|auto>` Portal URL parameters for
+  dual-stack outbound source binding, covering Portal direct dials, SOCKS5
+  outbound control and relay sockets, and `next` hops. `dial` stays mutually
+  exclusive with them.
+- `scripts/generate-upstream-lock.sh` and `make upstream-lock` regenerate
+  `UPSTREAM.lock` and `internal/upstreamlock/generated.go` from a local
+  Nowhere checkout, with the protocol-hash coverage set documented.
 - Portal SOCKS5 outbound (`portal://...?socks=host:port`) for TCP CONNECT and
   UDP ASSOCIATE. There is no direct fallback; `socks` and `next` stay mutually
   exclusive.
@@ -21,12 +39,51 @@ and all clients.
 
 ### Changed
 
+- **Breaking (client trust):** client carriers now verify the Portal
+  certificate against the system trust roots and the endpoint host name unless
+  `pin=` is set; `sni=none` no longer disables verification, and missing system
+  roots fail startup. Connections to the default self-signed Portal fail unless
+  pinned; the Portal logs `TLS certificate SHA-256 fingerprint: <hex>` at
+  startup as the canonical way to obtain a `pin=`.
+- **Breaking (configuration):** Portal listener keys and every `next` hop key
+  must be 32–64 lowercase hexadecimal characters after percent-decoding, or
+  startup fails before listen. Vector client keys remain free-form.
+- The TCP Morph prelude default policy is now `full8` (unset
+  `NOW_MORPH_TCP_PRELUDE`); a set-but-empty value now errors; `low7` stays
+  selectable. Receivers never interpret prelude contents, so interop with
+  2.1.x peers is unaffected in both directions.
+- `log=event` is rejected; log levels are `none`, `debug`, `info`, `warn`,
+  `error`, and the Portal reports the TLS certificate fingerprint at info.
+- Mux robustness aligned with upstream 2.1.2: per-flow protocol failures reset
+  the offending flow instead of tearing down the carrier; carriers record a
+  first close reason (application close, idle timeout, unexpected EOF, reader
+  or writer failure, protocol violation); outbound frames carry per-flow
+  generations so a reused flow ID cannot receive a previous generation's bytes;
+  a stream open cancelled between reservation and commit rolls back; the pooled
+  TCP carrier retires as soon as its last acquisition closes; TLS Mux pools
+  reject acquires after `Close` and join their monitors; QUIC session and UDP
+  route setup paths cancel cleanly during shutdown; the CLI races pending
+  SOCKS5 setups against shutdown.
+- `nowhere-check -version` reports the aligned upstream release as 2.2.1.
 - Upgrade the Portal CLI to [quic-go](https://github.com/quic-go/quic-go)
   v0.62.0 (`*quic.Conn` / `*quic.Stream`). The CLI module now requires Go 1.26.
   Library tests still run on Go 1.20; CI skips the CLI on that matrix entry.
 
+### Removed
+
+- The `mix` client carrier policy. `BundleOptions` no longer accepts
+  `MixUp`, `MixDown`, or `MixFallbackTimeout`; `CarrierMode` no longer has
+  `ModeMix`; `ParseCarrierMode` accepts only `tcp` or `udp`;
+  `(*CarrierBundle).MixEnabled`, `CarrierMode.IsMix`,
+  `CarrierMode.Selectors` (now returning a single `wire.Carrier`), and
+  `DefaultMixFallbackTimeout` are gone. Vector and Portal URLs reject
+  `up=mix` / `down=mix`. `tcp`/`udp` pairs and the tcp/udp dual-stack server
+  listener are unchanged; the wire format never carried mix.
+
 ### Fixed
 
+- A failed pooled-carrier dial no longer leaves the failed shard registered in
+  the pool while the `Open` call falls back to a live carrier.
 - Deliver Mux DATA, FIN, and RESET when the inbound queue is full instead of
   dropping frames. Silent drops truncated payloads and stalled credit-window
   tests under load.

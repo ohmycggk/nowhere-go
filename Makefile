@@ -12,7 +12,7 @@ PLATFORMS := \
 	windows/amd64 \
 	windows/arm64
 
-.PHONY: all test vet check dist clean nowhere nowhere-check
+.PHONY: all test vet check dist clean nowhere nowhere-check upstream-lock
 
 all: check
 
@@ -24,6 +24,9 @@ vet:
 
 check: test vet
 	go run ./cmd/nowhere-check
+
+upstream-lock:
+	./scripts/generate-upstream-lock.sh ../Nowhere
 
 nowhere-check:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o nowhere-check ./cmd/nowhere-check
