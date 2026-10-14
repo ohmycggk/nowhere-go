@@ -659,7 +659,6 @@ func (h *Handler) ServeQUIC(parent context.Context, conn QuicConn) error {
 	defer cancel(nil)
 	pump := newQUICDatagramPump(conn)
 	go pump.run(ctx)
-	defer pump.stop()
 
 	session, firstStream, err := h.authenticateQuic(ctx, conn)
 	if err != nil {
@@ -675,6 +674,9 @@ func (h *Handler) ServeQUIC(parent context.Context, conn QuicConn) error {
 	}
 	defer h.sessions.Unregister(session)
 	defer session.Close()
+	// Stop the pump before the session closes so every datagram already
+	// received is handled, and its drops flushed, before shutdown.
+	defer pump.stop()
 	session.startReassemblyExpiry()
 	pump.activate(session)
 	if notifier, ok := conn.(QuicAuthenticationNotifier); ok {

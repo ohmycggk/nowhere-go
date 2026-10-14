@@ -99,6 +99,11 @@ and all clients.
 
 ### Fixed
 
+- QUIC sessions flush uplink UDP drops on shutdown again. The datagram pump is
+  now stopped before the session closes, so every datagram already received is
+  handled and its drop recorded before `flushUDPDrop` emits the aggregate
+  `udp_queue_drop_total` event. Previously a datagram handled during the
+  shutdown window was counted but never reported.
 - The nw3 Vector SOCKS5 server accepts a UDP ASSOCIATE request again. The
   request address is a source constraint, not a dial target, so the standard
   `0.0.0.0:0` form no longer fails target validation and drop the connection
