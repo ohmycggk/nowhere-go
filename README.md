@@ -311,7 +311,7 @@ verify the Portal certificate against the system roots and the endpoint host
 name unless `pin=<sha256>` is set — `fingerprint` prints the leaf certificate
 SHA-256 of a `nowhere://` share link to obtain one.
 
-Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` and `nowhere-check` binaries for Linux, Windows, macOS, and FreeBSD (`amd64` and `arm64`) plus `SHA256SUMS`. Reproduce locally with `make dist`. Consume the library with `go get`.
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml): tests, then `nowhere` binaries for Linux, Windows, macOS, and FreeBSD (`amd64` and `arm64`) plus `SHA256SUMS`. The `nowhere-check` conformance tool is not released; build it locally with `make nowhere-check` when needed. Reproduce the release locally with `make dist`. Consume the library with `go get`.
 
 ```bash
 go get github.com/ohmycggk/nowhere-go@v2.0.0

@@ -27,8 +27,6 @@ jobs:
         run: go test -count=1 ./...
       - name: Vet
         run: go vet ./...
-      - name: nowhere-check
-        run: go run ./cmd/nowhere-check
       - name: Test Portal/Vector CLI
         run: cd cmd/nowhere && GOWORK=off go test ./...
 
@@ -57,7 +55,7 @@ jobs:
         run: ls -l dist && cat dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: nowhere-check-${{ steps.meta.outputs.version }}
+          name: nowhere-${{ steps.meta.outputs.version }}
           path: dist/
           if-no-files-found: error
       - name: GitHub Release

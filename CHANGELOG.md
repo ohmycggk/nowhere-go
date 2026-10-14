@@ -47,6 +47,11 @@ and all clients.
 
 ### Changed
 
+- Releases no longer ship the `nowhere-check` conformance binary: `make dist`
+  and the release workflow publish the `nowhere` Portal/Vector binaries and
+  `SHA256SUMS` only. The tool still exists for local protocol verification
+  (`make nowhere-check`, `go run ./cmd/nowhere-check`) and CI keeps running it
+  on every push and pull request.
 - **Breaking (CLI default):** `nowhere <url>` with no nw2-only option (`up`,
   `down`, `mux`, `next`, `socks`) is Nowhere 3. Morph defaults to on and the
   shared key must be exactly 32 lowercase hex characters. Keep an nw2-only

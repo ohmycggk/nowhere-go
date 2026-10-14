@@ -46,9 +46,6 @@ dist:
 		echo "building $$out"; \
 		cd cmd/nowhere && GOWORK=off CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o "../../$$out" .; \
 		cd ../..; \
-		cout="$(DIST)/nowhere-check_$(VERSION)_$${os}_$${arch}$$ext"; \
-		echo "building $$cout"; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$$cout" ./cmd/nowhere-check; \
 	done
 	cd "$(DIST)" && sha256sum * > SHA256SUMS
 	@echo "artifacts in $(DIST)/"
