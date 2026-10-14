@@ -56,16 +56,6 @@ func (t Target) HostPort() string {
 
 func (t Target) String() string { return t.HostPort() }
 
-func (t Target) encodedLen() int {
-	if t.Addr.IsValid() {
-		if t.Addr.Is4() {
-			return 1 + 4 + 2
-		}
-		return 1 + 16 + 2
-	}
-	return 1 + 1 + len(t.Host) + 2
-}
-
 // AppendTarget encodes the target onto dst.
 func AppendTarget(dst []byte, t Target) ([]byte, error) {
 	if err := t.validate(); err != nil {
@@ -208,6 +198,3 @@ func validateDomain(host string) error {
 	}
 	return nil
 }
-
-// targetMaxLen is documented for readers that bound a flow request.
-const targetEncodedMax = targetMaxLen

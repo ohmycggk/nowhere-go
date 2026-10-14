@@ -147,7 +147,7 @@ func (s *Server) serveTCP(ctx context.Context, raw net.Conn) {
 		}
 	}()
 	if s.keys != nil {
-		raw = morph.WrapTCPServer(raw, *s.keys).(net.Conn)
+		raw = morph.WrapTCPServer(raw, *s.keys)
 	}
 	tlsConn := tls.Server(raw, s.tls)
 	_ = tlsConn.SetDeadline(time.Now().Add(authBudget()))
@@ -391,15 +391,12 @@ func (s *Server) serveEgressConn(ctx context.Context, conn qio.Conn, router *dgr
 	}
 	_ = st.CloseWrite()
 	defer s.clearOwner(conn)
-	for {
-		extra, err := conn.AcceptStream(ctx)
-		if err != nil {
-			return
-		}
-		_ = extra.Close()
-		_ = conn.CloseWithError(0, "direction")
+	stray, err := conn.AcceptStream(ctx)
+	if err != nil {
 		return
 	}
+	_ = stray.Close()
+	_ = conn.CloseWithError(0, "direction")
 }
 
 func (s *Server) currentOwner() *egressOwner {

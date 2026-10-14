@@ -70,9 +70,9 @@ func TestTLSEcho(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancelFlow := context.WithTimeout(context.Background(), 5*time.Second)
+			flowCtx, cancelFlow := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancelFlow()
-			conn, err := client.OpenTCP(ctx, target)
+			conn, err := client.OpenTCP(flowCtx, target)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +94,7 @@ func TestTLSEcho(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			uc, err := client.OpenUDP(ctx, uTarget)
+			uc, err := client.OpenUDP(flowCtx, uTarget)
 			if err != nil {
 				t.Fatal(err)
 			}

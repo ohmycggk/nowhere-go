@@ -59,7 +59,7 @@ jobs:
           go-version: stable
           cache: true
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
+        run: go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
       - name: Run staticcheck
         run: staticcheck ./...
 
@@ -86,9 +86,9 @@ jobs:
           go-version: stable
           cache: true
       - name: Allocation ceilings
-        run: go test ./wire ./carrier/quic ./bundle -run=AllocationCeiling -count=1
+        run: go test ./nw2/wire ./nw2/carrier/quic ./nw2/bundle -run=AllocationCeiling -count=1
       - name: Benchmem report
-        run: go test ./wire ./carrier/quic ./bundle -run=^$ -bench=. -benchmem -count=3
+        run: go test ./nw2/wire ./nw2/carrier/quic ./nw2/bundle -run=^$ -bench=. -benchmem -count=3
 
   fuzz:
     name: wire fuzz
