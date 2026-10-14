@@ -1,8 +1,9 @@
 //go:build ignore
 
-// Command upstream-lock regenerates UPSTREAM.lock and the generated constants
-// in internal/upstreamlock from a local Nowhere checkout. It is not built as
+// Command upstream-lock regenerates UPSTREAM-nw2.lock and the generated constants
+// in internal/upstreamlock from a local Nowhere 2 checkout. It is not built as
 // part of the module; drive it through scripts/generate-upstream-lock.sh.
+// UPSTREAM.lock is the Nowhere 3 pin and is not rewritten here.
 
 package main
 
@@ -21,7 +22,7 @@ import (
 func main() {
 	var (
 		upstream = flag.String("upstream", "", "path to a local Nowhere checkout (any ref)")
-		lockPath = flag.String("lock", "UPSTREAM.lock", "path to UPSTREAM.lock")
+		lockPath = flag.String("lock", "UPSTREAM-nw2.lock", "path to UPSTREAM-nw2.lock")
 		vectors  = flag.String("vectors", "testdata/vectors", "path to the local vector corpus")
 		write    = flag.Bool("write", false, "rewrite the lock file and generated.go instead of printing")
 	)
@@ -129,7 +130,7 @@ func writeLock(path string, lock upstreamlock.Lock) error {
 }
 
 func writeGenerated(lock upstreamlock.Lock) error {
-	body := fmt.Sprintf(`// Code generated from UPSTREAM.lock by generate-upstream-lock-go.sh; DO NOT EDIT.
+	body := fmt.Sprintf(`// Code generated from UPSTREAM-nw2.lock by generate-upstream-lock-go.sh; DO NOT EDIT.
 
 package upstreamlock
 

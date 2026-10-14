@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 
-	"github.com/ohmycggk/nowhere-go/wire"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 const (
@@ -124,8 +125,58 @@ func socksReadRequest(r io.Reader) (cmd byte, target wire.Target, err error) {
 	default:
 		return 0, wire.Target{}, fmt.Errorf("unsupported atyp %d", hdr[3])
 	}
+	if cmd == socksCmdUDP {
+		// RFC 1928: the UDP ASSOCIATE request address is a source constraint,
+		// not a dial target. 0.0.0.0:0 means "any source" and must survive
+		// dial-target validation, so parse it unchecked.
+		target, err = uncheckedTarget(rest)
+		return cmd, target, err
+	}
 	target, _, err = wire.DecodeTarget(rest)
 	return cmd, target, err
+}
+
+// uncheckedTarget parses a SOCKS address prefix into a Target without the
+// dial-target rules (nonzero port, valid domain). Only UDP ASSOCIATE source
+// constraints may use it.
+func uncheckedTarget(input []byte) (wire.Target, error) {
+	switch input[0] {
+	case socksAtypIPv4:
+		if len(input) < 7 {
+			return wire.Target{}, fmt.Errorf("truncated socks address")
+		}
+		return wire.Target{
+			Type: wire.TargetTypeIPv4,
+			Addr: netip.AddrFrom4([4]byte{input[1], input[2], input[3], input[4]}),
+			Port: binary.BigEndian.Uint16(input[5:7]),
+		}, nil
+	case socksAtypIPv6:
+		if len(input) < 19 {
+			return wire.Target{}, fmt.Errorf("truncated socks address")
+		}
+		var raw [16]byte
+		copy(raw[:], input[1:17])
+		return wire.Target{
+			Type: wire.TargetTypeIPv6,
+			Addr: netip.AddrFrom16(raw),
+			Port: binary.BigEndian.Uint16(input[17:19]),
+		}, nil
+	case socksAtypDomain:
+		if len(input) < 2 {
+			return wire.Target{}, fmt.Errorf("truncated socks address")
+		}
+		l := int(input[1])
+		if len(input) < 2+l+2 {
+			return wire.Target{}, fmt.Errorf("truncated socks address")
+		}
+		return wire.Target{
+			Type: wire.TargetTypeDomain,
+			Host: string(input[2 : 2+l]),
+			Port: binary.BigEndian.Uint16(input[2+l : 4+l]),
+		}, nil
+	default:
+		return wire.Target{}, fmt.Errorf("unsupported atyp %d", input[0])
+	}
 }
 
 func socksReply(w io.Writer, rep byte, addr net.Addr) error {

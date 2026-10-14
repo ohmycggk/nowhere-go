@@ -79,27 +79,38 @@ func run(args []string) error {
 		return fmt.Errorf("expected exactly one configuration URL; run \"nowhere --help\" for usage")
 	}
 
-	cfg, err := parseCommandURL(args[0])
+	edition, err := urlEdition(args[0])
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if edition == "nw2" {
+		cfg, err := parseCommandURL(args[0])
+		if err != nil {
+			return err
+		}
+		log := newLogger(cfg.log)
+		switch cfg.kind {
+		case kindPortal:
+			log.info("starting nw2 portal %s", cfg.endpoint.tcpAddr())
+			return runPortal(ctx, cfg, log)
+		case kindVector:
+			log.info("starting nw2 vector socks %s -> %s", cfg.socks, cfg.endpoint.tcpAddr())
+			return runVector(ctx, cfg, log)
+		default:
+			return fmt.Errorf("unknown command")
+		}
+	}
+	cfg, err := parseNW3(args[0], true)
 	if err != nil {
 		return err
 	}
 	log := newLogger(cfg.log)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	switch cfg.kind {
-	case kindPortal:
-		log.info("starting portal %s", cfg.endpoint.tcpAddr())
-		return runPortal(ctx, cfg, log)
-	case kindVector:
-		log.info("starting vector socks %s -> %s", cfg.socks, cfg.endpoint.tcpAddr())
-		return runVector(ctx, cfg, log)
-	default:
-		return fmt.Errorf("unknown command")
-	}
+	return runNW3(ctx, cfg, log)
 }
 
-// generateKey prints 16 crypto/rand bytes as 32 lowercase hex characters, the
-// Nowhere 2.2 Portal key format.
+// generateKey prints 16 crypto/rand bytes as 32 lowercase hex characters.
 func generateKey() (string, error) {
 	var key [16]byte
 	if _, err := rand.Read(key[:]); err != nil {

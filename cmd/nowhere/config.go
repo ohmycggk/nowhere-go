@@ -2,346 +2,274 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
 
-	"github.com/ohmycggk/nowhere-go/bundle"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
-type logLevel int
+type nw3Kind int
 
 const (
-	logNone logLevel = iota
-	logError
-	logWarn
-	logInfo
-	logDebug
+	nw3Portal nw3Kind = iota
+	nw3Vector
+	nw3Egress
 )
 
-type commandKind int
+type nw3Exit int
 
 const (
-	kindPortal commandKind = iota
-	kindVector
+	nw3ExitDirect nw3Exit = iota
+	nw3ExitEgress
+	nw3ExitSocks
 )
 
-type nextHop struct {
-	key      string
-	endpoint serviceEndpoint
-}
-
-type appConfig struct {
-	kind      commandKind
+type nw3Config struct {
+	kind      nw3Kind
 	key       string
 	endpoint  serviceEndpoint
-	tlsMode   int // 1 generated, 2 files
+	tlsMode   int
 	certPath  string
 	keyPath   string
-	up        string
-	down      string
-	mux       bundle.MuxMode
-	sni       string
-	pin       string
-	morph     bool
+	inAddr    string
+	inUser    string
+	inPass    string
+	exit      nw3Exit
 	socks     string
 	socksUser string
 	socksPass string
-	next      *nextHop
+	sni       string
+	pin       string
+	morph     bool
 	log       logLevel
 	dial      dialPolicy
+	rate      int
+	etar      int
 }
 
-func parseCommandURL(raw string) (appConfig, error) {
-	return parseCommandURLMode(raw, true)
-}
-
-// parseCommandURLMode parses a portal/vector configuration URL. probe passes
-// vectorRequiresSocks=false because upstream PortalClientConfig::from_probe_url
-// treats socks= as optional there.
-func parseCommandURLMode(raw string, vectorRequiresSocks bool) (appConfig, error) {
-	if strings.Contains(raw, "://") {
-		if !strings.HasPrefix(raw, "portal://") && !strings.HasPrefix(raw, "vector://") {
-			return appConfig{}, fmt.Errorf("unsupported URL scheme")
-		}
+// urlEdition reports which stack a service URL selects. The choice is fixed
+// before the handshake: nw2 URLs speak only nw2, everything else speaks only nw3.
+func urlEdition(raw string) (string, error) {
+	if !strings.Contains(raw, "://") {
+		return "", fmt.Errorf("unsupported URL scheme")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return appConfig{}, err
+		return "", err
+	}
+	switch u.Scheme {
+	case "egress":
+		return "nw3", nil
+	case "portal", "vector", "nowhere":
+	default:
+		return "", fmt.Errorf("unsupported URL scheme")
+	}
+	q := u.Query()
+	nw2 := hasQuery(q, "up", "down", "mux", "next", "socks")
+	nw3 := hasQuery(q, "in", "out", "rate", "etar")
+	if nw2 && nw3 {
+		return "", fmt.Errorf("nw2 and nw3 options cannot be combined")
+	}
+	if nw2 {
+		return "nw2", nil
+	}
+	return "nw3", nil
+}
+
+func hasQuery(q url.Values, names ...string) bool {
+	for _, name := range names {
+		if _, ok := q[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nw3Config{}, err
 	}
 	if u.User == nil || u.User.Username() == "" {
-		return appConfig{}, fmt.Errorf("missing shared key before '@'")
+		return nw3Config{}, fmt.Errorf("missing shared key before '@'")
 	}
 	if _, ok := u.User.Password(); ok {
-		return appConfig{}, fmt.Errorf("password credentials are not supported; put the shared key before '@'")
+		return nw3Config{}, fmt.Errorf("password credentials are not supported; put the shared key before '@'")
 	}
 	key, err := url.QueryUnescape(u.User.Username())
-	if err != nil {
-		return appConfig{}, fmt.Errorf("invalid shared key encoding")
+	if err != nil || key == "" {
+		return nw3Config{}, fmt.Errorf("invalid shared key encoding")
 	}
-	if key == "" {
-		return appConfig{}, fmt.Errorf("missing shared key before '@'")
+	if err := wire.ValidateServiceKey(key); err != nil {
+		return nw3Config{}, err
 	}
-
-	cfg := appConfig{key: key, tlsMode: 1, log: logInfo, up: "", down: ""}
-	query := u.Query()
-	first := func(name string) string {
-		if vs := query[name]; len(vs) > 0 {
-			return vs[0]
-		}
-		return ""
-	}
-
+	cfg := nw3Config{key: key, tlsMode: 1, morph: true, log: logInfo}
 	switch u.Scheme {
 	case "portal":
-		cfg.kind = kindPortal
-		if err := validateListenerKey(key); err != nil {
-			return appConfig{}, fmt.Errorf("Portal listener: %w", err)
-		}
+		cfg.kind = nw3Portal
 		cfg.endpoint, err = parseServiceEndpoint(u, true, "Portal listener")
-		if err != nil {
-			return appConfig{}, err
-		}
 	case "vector":
-		cfg.kind = kindVector
-		if len(key) > 255 {
-			return appConfig{}, fmt.Errorf("shared key exceeds the 255-byte limit")
-		}
+		cfg.kind = nw3Vector
 		cfg.endpoint, err = parseServiceEndpoint(u, false, "Vector endpoint")
-		if err != nil {
-			return appConfig{}, err
-		}
+	case "egress":
+		cfg.kind = nw3Egress
+		cfg.endpoint, err = parseServiceEndpoint(u, false, "Egress endpoint")
 	default:
-		return appConfig{}, fmt.Errorf("URL must use portal:// or vector://")
+		return nw3Config{}, fmt.Errorf("URL must use portal://, vector://, or egress://")
 	}
-
-	if v := first("tls"); v != "" {
+	if err != nil {
+		return nw3Config{}, err
+	}
+	if err := normalizeNW3Endpoint(&cfg); err != nil {
+		return nw3Config{}, err
+	}
+	q := u.Query()
+	first := func(name string) (string, bool) {
+		vs, ok := q[name]
+		if !ok || len(vs) == 0 {
+			return "", false
+		}
+		return vs[0], true
+	}
+	if v, ok := first("tls"); ok {
 		mode, err := strconv.Atoi(v)
 		if err != nil || (mode != 1 && mode != 2) {
-			return appConfig{}, fmt.Errorf("tls must be 1 or 2")
+			return nw3Config{}, fmt.Errorf("tls must be 1 or 2")
 		}
 		cfg.tlsMode = mode
 	}
-	cfg.certPath = first("crt")
-	cfg.keyPath = first("key")
+	if v, ok := first("crt"); ok {
+		cfg.certPath = v
+	}
+	if v, ok := first("key"); ok {
+		cfg.keyPath = v
+	}
 	if cfg.tlsMode == 2 && (cfg.certPath == "" || cfg.keyPath == "") {
-		return appConfig{}, fmt.Errorf("tls=2 requires crt and key")
+		return nw3Config{}, fmt.Errorf("tls=2 requires crt and key")
 	}
-
-	if v := first("up"); v != "" {
-		if err := validateCarrier(v); err != nil {
-			return appConfig{}, err
-		}
-		cfg.up = v
-	}
-	if v := first("down"); v != "" {
-		if err := validateCarrier(v); err != nil {
-			return appConfig{}, err
-		}
-		cfg.down = v
-	}
-	if v := first("mux"); v != "" {
-		switch v {
-		case "0":
-			cfg.mux = bundle.MuxDisabled
-		case "1":
-			cfg.mux = bundle.MuxEnabled
-		default:
-			return appConfig{}, fmt.Errorf("mux must be 0 or 1")
-		}
-	}
-	cfg.sni = first("sni")
-	if cfg.sni == "none" {
-		cfg.sni = ""
-	}
-	cfg.pin = first("pin")
-	if cfg.pin == "none" {
-		cfg.pin = ""
-	}
-	if _, err := wire.ParseCertificatePin(cfg.pin); err != nil {
-		return appConfig{}, err
-	}
-	if v := first("morph"); v != "" {
+	if v, ok := first("morph"); ok {
 		switch v {
 		case "0":
 			cfg.morph = false
 		case "1":
 			cfg.morph = true
 		default:
-			return appConfig{}, fmt.Errorf("morph must be 0 or 1")
+			return nw3Config{}, fmt.Errorf("morph must be 0 or 1")
 		}
 	}
-	if v := first("log"); v != "" {
+	if v, ok := first("log"); ok {
 		level, err := parseLogLevel(v)
 		if err != nil {
-			return appConfig{}, err
+			return nw3Config{}, err
 		}
 		cfg.log = level
 	}
-	cfg.dial, err = parseDialPolicy(query)
-	if err != nil {
-		return appConfig{}, err
+	if v, ok := first("sni"); ok && v != "none" {
+		cfg.sni = v
 	}
-
-	if v := first("socks"); v != "" && v != "none" {
+	if v, ok := first("pin"); ok && v != "none" {
+		cfg.pin = v
+	}
+	if _, err := parsePin(cfg.pin); err != nil {
+		return nw3Config{}, err
+	}
+	cfg.dial, err = parseDialPolicy(q)
+	if err != nil {
+		return nw3Config{}, err
+	}
+	if v, ok := first("rate"); ok {
+		cfg.rate, err = parseMbps(v, "rate")
+		if err != nil {
+			return nw3Config{}, err
+		}
+	}
+	if v, ok := first("etar"); ok {
+		cfg.etar, err = parseMbps(v, "etar")
+		if err != nil {
+			return nw3Config{}, err
+		}
+	}
+	if v, ok := first("in"); ok && v != "" {
 		user, pass, addr, err := parseSocksEndpoint(v)
 		if err != nil {
-			return appConfig{}, err
+			return nw3Config{}, err
 		}
-		cfg.socks, cfg.socksUser, cfg.socksPass = addr, user, pass
+		cfg.inUser, cfg.inPass, cfg.inAddr = user, pass, addr
 	}
-	if v := first("next"); v != "" && v != "none" {
-		hop, err := parseNext(v)
-		if err != nil {
-			return appConfig{}, err
+	if v, ok := first("out"); ok && v != "" && v != "direct" {
+		if v == "egress" {
+			cfg.exit = nw3ExitEgress
+		} else {
+			user, pass, addr, err := parseSocksEndpoint(v)
+			if err != nil {
+				return nw3Config{}, fmt.Errorf("out: %w", err)
+			}
+			cfg.exit = nw3ExitSocks
+			cfg.socks, cfg.socksUser, cfg.socksPass = addr, user, pass
 		}
-		cfg.next = &hop
 	}
-	if cfg.kind == kindPortal && cfg.socks != "" && cfg.next != nil {
-		return appConfig{}, fmt.Errorf("socks and next are mutually exclusive")
+	if cfg.kind == nw3Portal && cfg.exit == nw3ExitEgress {
+		if !cfg.endpoint.hasUDP() {
+			return nw3Config{}, fmt.Errorf("out=egress requires a QUIC listener")
+		}
+		if cfg.dial.configured() {
+			return nw3Config{}, fmt.Errorf("out=egress conflicts with dial, dial4, or dial6")
+		}
 	}
-	if cfg.kind == kindVector && vectorRequiresSocks && cfg.socks == "" {
-		return appConfig{}, fmt.Errorf("vector requires socks=<listen-endpoint>")
+	if cfg.kind == nw3Vector && vectorRequiresIn && cfg.inAddr == "" {
+		return nw3Config{}, fmt.Errorf("vector requires in=<listen-endpoint>")
 	}
-	if err := cfg.normalizeRoute(); err != nil {
-		return appConfig{}, err
+	if cfg.kind != nw3Portal && (cfg.certPath != "" || cfg.keyPath != "") {
+		return nw3Config{}, fmt.Errorf("crt and key are portal options")
 	}
 	return cfg, nil
 }
 
-func (c *appConfig) normalizeRoute() error {
-	onlyUDP := c.endpoint.hasUDP() && !c.endpoint.hasTCP()
-	if c.up == "" {
-		if onlyUDP {
-			c.up = "udp"
-		} else {
-			c.up = "tcp"
+func normalizeNW3Endpoint(cfg *nw3Config) error {
+	switch cfg.kind {
+	case nw3Vector:
+		if cfg.endpoint.hasTCP() && cfg.endpoint.hasUDP() && cfg.endpoint.tcp.port == cfg.endpoint.udp.port && cfg.endpoint.tcp.family == cfg.endpoint.udp.family {
+			cfg.endpoint.udp = nil
 		}
-	}
-	if c.down == "" {
-		if onlyUDP {
-			c.down = "udp"
-		} else {
-			c.down = "tcp"
+		if cfg.endpoint.hasTCP() && cfg.endpoint.hasUDP() {
+			return fmt.Errorf("vector endpoint declares exactly one carrier")
 		}
-	}
-	if (c.up == "udp" || c.down == "udp") && !c.endpoint.hasUDP() {
-		return fmt.Errorf("udp route requires a UDP carrier")
-	}
-	if (c.up == "tcp" || c.down == "tcp") && !c.endpoint.hasTCP() {
-		return fmt.Errorf("tcp route requires a TCP carrier")
-	}
-	if !c.endpoint.hasTCP() {
-		c.mux = bundle.MuxDisabled
-	}
-	if c.up == "udp" && c.down == "udp" {
-		c.mux = bundle.MuxDisabled
+	case nw3Egress:
+		if cfg.endpoint.hasTCP() && cfg.endpoint.hasUDP() && cfg.endpoint.tcp.port == cfg.endpoint.udp.port {
+			cfg.endpoint.tcp = nil
+		}
+		if cfg.endpoint.hasTCP() || !cfg.endpoint.hasUDP() {
+			return fmt.Errorf("egress endpoint declares exactly one QUIC carrier")
+		}
+	default:
+		if !cfg.endpoint.hasTCP() && !cfg.endpoint.hasUDP() {
+			return fmt.Errorf("portal endpoint declares no carrier")
+		}
 	}
 	return nil
 }
 
-func validateCarrier(v string) error {
-	switch v {
-	case "tcp", "udp":
-		return nil
-	default:
-		return fmt.Errorf("up/down must be tcp or udp")
+func parseMbps(v, name string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 || n > 2147483647 {
+		return 0, fmt.Errorf("%s must be 0..=2147483647", name)
 	}
+	return n, nil
 }
 
-func parseLogLevel(v string) (logLevel, error) {
-	switch v {
-	case "none":
-		return logNone, nil
-	case "error":
-		return logError, nil
-	case "warn":
-		return logWarn, nil
-	case "info":
-		return logInfo, nil
-	case "debug":
-		return logDebug, nil
-	default:
-		return 0, fmt.Errorf("log must be none, debug, info, warn, or error; found %q", v)
+func parsePin(pin string) (string, error) {
+	if pin == "" {
+		return "", nil
 	}
-}
-
-func parseSocksEndpoint(v string) (user, pass, addr string, err error) {
-	if strings.Contains(v, "@") {
-		var creds string
-		creds, addr, _ = strings.Cut(v, "@")
-		user, pass, _ = strings.Cut(creds, ":")
-		user, err = url.QueryUnescape(user)
-		if err != nil {
-			return "", "", "", err
-		}
-		pass, err = url.QueryUnescape(pass)
-		if err != nil {
-			return "", "", "", err
-		}
-	} else {
-		addr = v
+	if len(pin) != 64 {
+		return "", fmt.Errorf("pin must be 64 lowercase hexadecimal characters")
 	}
-	if strings.HasPrefix(addr, ":") {
-		addr = net.JoinHostPort("", strings.TrimPrefix(addr, ":"))
-	}
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		return "", "", "", fmt.Errorf("invalid socks endpoint %q", v)
-	}
-	return user, pass, addr, nil
-}
-
-func parseNext(v string) (nextHop, error) {
-	if !strings.Contains(v, "@") {
-		return nextHop{}, fmt.Errorf("Portal next endpoint: shared key and endpoint must be separated by '@'")
-	}
-	key, rest, _ := strings.Cut(v, "@")
-	key, err := url.QueryUnescape(key)
-	if err != nil || key == "" {
-		return nextHop{}, fmt.Errorf("invalid next shared key")
-	}
-	if err := validateListenerKey(key); err != nil {
-		return nextHop{}, fmt.Errorf("Portal next endpoint: %w", err)
-	}
-	u, err := url.Parse("portal://x@" + rest)
-	if err != nil {
-		return nextHop{}, fmt.Errorf("Portal next endpoint: invalid endpoint")
-	}
-	endpoint, err := parseServiceEndpoint(u, false, "Portal next endpoint")
-	if err != nil {
-		return nextHop{}, err
-	}
-	return nextHop{key: key, endpoint: endpoint}, nil
-}
-
-// validateListenerKey enforces the Nowhere 2.2 Portal shared-key rule: after URL
-// percent-decoding the key must be 32–64 lowercase hexadecimal characters. Both
-// the Portal listener and each next= hop use this rule; Vector client keys are
-// intentionally exempt (1–255 raw bytes).
-func validateListenerKey(key string) error {
-	if len(key) < 32 || len(key) > 64 {
-		return errSharedKeyRule
-	}
-	for i := 0; i < len(key); i++ {
-		c := key[i]
+	for i := 0; i < len(pin); i++ {
+		c := pin[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return errSharedKeyRule
+			return "", fmt.Errorf("pin must be 64 lowercase hexadecimal characters")
 		}
 	}
-	return nil
-}
-
-var errSharedKeyRule = fmt.Errorf("shared key must be 32\u201364 lowercase hexadecimal characters; use nowhere generate-key")
-
-func routeCarriers(up, down string) (wire.Carrier, wire.Carrier) {
-	var upC, downC wire.Carrier
-	if up == "udp" {
-		upC = wire.CarrierQUIC
-	}
-	if down == "udp" {
-		downC = wire.CarrierQUIC
-	}
-	return upC, downC
+	return pin, nil
 }

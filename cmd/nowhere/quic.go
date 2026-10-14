@@ -4,322 +4,107 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
-	"sync"
 	"time"
 
-	nquic "github.com/ohmycggk/nowhere-go/carrier/quic"
-	"github.com/ohmycggk/nowhere-go/server"
+	"github.com/ohmycggk/nowhere-go/qio"
 	"github.com/ohmycggk/nowhere-go/wire"
 	"github.com/quic-go/quic-go"
 )
 
-func quicConfig() *quic.Config {
+func nw3QuicConfig() *quic.Config {
 	return &quic.Config{
 		EnableDatagrams: true,
 		MaxIdleTimeout:  120 * time.Second,
+		Allow0RTT:       false,
 	}
 }
 
-type clientBackend struct {
-	addr    string
-	tls     *tls.Config
-	packet  net.PacketConn
-	mu      sync.Mutex
-	session *clientSession
+func nw3ServerTLS(base *tls.Config) *tls.Config {
+	cfg := base.Clone()
+	cfg.MinVersion = tls.VersionTLS13
+	cfg.MaxVersion = tls.VersionTLS13
+	cfg.NextProtos = []string{wire.ALPN}
+	cfg.SessionTicketsDisabled = true
+	return cfg
 }
 
-func newClientBackend(addr string, tlsCfg *tls.Config, packet net.PacketConn) *clientBackend {
-	return &clientBackend{addr: addr, tls: tlsCfg, packet: packet}
-}
+type nw3Listener struct{ ln *quic.Listener }
 
-func (b *clientBackend) AcquireSession(ctx context.Context) (nquic.Session, error) {
-	b.mu.Lock()
-	if b.session != nil && !b.session.closed() {
-		s := b.session
-		b.mu.Unlock()
-		return s, nil
-	}
-	b.mu.Unlock()
-
-	udpAddr, err := net.ResolveUDPAddr("udp", b.addr)
+func listenNW3QUIC(pc net.PacketConn, tlsCfg *tls.Config) (*nw3Listener, error) {
+	ln, err := quic.Listen(pc, nw3ServerTLS(tlsCfg), nw3QuicConfig())
 	if err != nil {
 		return nil, err
 	}
-	pc := b.packet
-	if pc == nil {
-		pc, err = net.ListenPacket("udp", "")
-		if err != nil {
-			return nil, err
-		}
-	}
-	conn, err := quic.Dial(ctx, pc, udpAddr, b.tls.Clone(), quicConfig())
-	if err != nil {
-		if b.packet == nil {
-			_ = pc.Close()
-		}
-		return nil, err
-	}
-	s := &clientSession{conn: conn, pc: pc, owned: b.packet == nil}
-	b.mu.Lock()
-	b.session = s
-	b.mu.Unlock()
-	return s, nil
+	return &nw3Listener{ln: ln}, nil
 }
 
-func (b *clientBackend) InvalidateSession(session nquic.Session) {
-	s, ok := session.(*clientSession)
-	if !ok || s == nil {
-		return
-	}
-	b.mu.Lock()
-	if b.session == s {
-		b.session = nil
-	}
-	b.mu.Unlock()
-	s.Close()
-}
-
-func (b *clientBackend) Close() error {
-	b.mu.Lock()
-	s := b.session
-	b.session = nil
-	b.mu.Unlock()
-	if s != nil {
-		s.Close()
-	}
-	return nil
-}
-
-type clientSession struct {
-	conn  *quic.Conn
-	pc    net.PacketConn
-	owned bool
-}
-
-func (s *clientSession) closed() bool {
-	return s == nil || s.conn == nil || s.conn.Context().Err() != nil
-}
-
-func (s *clientSession) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
-	state := s.conn.ConnectionState()
-	material, err := state.TLS.ExportKeyingMaterial(wire.TLSExporterLabel, wire.EmptyTLSExporterContext(), wire.TLSExporterLen)
-	if err != nil {
-		return wire.TLSHandshakeInfo{}, err
-	}
-	var exporter wire.TLSExporter
-	copy(exporter[:], material)
-	return wire.TLSHandshakeInfo{
-		TLSVersion:     state.TLS.Version,
-		NegotiatedALPN: state.TLS.NegotiatedProtocol,
-		Exporter:       exporter,
-	}, nil
-}
-
-func (s *clientSession) PrepareStream(ctx context.Context) (nquic.PreparedStream, error) {
-	stream, err := s.conn.OpenStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &preparedStream{stream: stream}, nil
-}
-
-func (s *clientSession) ReceiveDatagram(ctx context.Context) ([]byte, error) {
-	return s.conn.ReceiveDatagram(ctx)
-}
-
-func (s *clientSession) CurrentMaxDatagramSize() int { return 1200 }
-
-func (s *clientSession) SendDatagram(_ context.Context, payload []byte) error {
-	return s.conn.SendDatagram(payload)
-}
-
-func (s *clientSession) LocalAddr() net.Addr { return s.conn.LocalAddr() }
-
-func (s *clientSession) Close() {
-	_ = s.conn.CloseWithError(0, "")
-	if s.owned && s.pc != nil {
-		_ = s.pc.Close()
-	}
-}
-
-type preparedStream struct {
-	stream *quic.Stream
-	once   sync.Once
-}
-
-func (p *preparedStream) Commit(ctx context.Context, setup []byte, finishWrite bool) (net.Conn, error) {
-	if _, err := p.stream.Write(setup); err != nil {
-		_ = p.stream.Close()
-		return nil, err
-	}
-	if finishWrite {
-		_ = p.stream.Close()
-	}
-	return &streamConn{Stream: p.stream, local: nil, remote: nil}, nil
-}
-
-func (p *preparedStream) Close() error {
-	var err error
-	p.once.Do(func() { err = p.stream.Close() })
-	return err
-}
-
-type streamConn struct {
-	*quic.Stream
-	local, remote net.Addr
-}
-
-func (s *streamConn) LocalAddr() net.Addr {
-	if s.local != nil {
-		return s.local
-	}
-	return dummyAddr{}
-}
-func (s *streamConn) RemoteAddr() net.Addr {
-	if s.remote != nil {
-		return s.remote
-	}
-	return dummyAddr{}
-}
-
-type dummyAddr struct{}
-
-func (dummyAddr) Network() string { return "quic" }
-func (dummyAddr) String() string  { return "quic" }
-
-type serverListener struct {
-	ln *quic.Listener
-}
-
-func listenQUIC(packet net.PacketConn, tlsCfg *tls.Config) (*serverListener, error) {
-	ln, err := quic.Listen(packet, tlsCfg, quicConfig())
-	if err != nil {
-		return nil, err
-	}
-	return &serverListener{ln: ln}, nil
-}
-
-func (l *serverListener) Accept(ctx context.Context) (server.QuicConn, error) {
+func (l *nw3Listener) Accept(ctx context.Context) (qio.Conn, error) {
 	c, err := l.ln.Accept(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &serverConn{c: c}, nil
+	return &nw3Conn{c: c}, nil
 }
 
-func (l *serverListener) Close() error { return l.ln.Close() }
+func (l *nw3Listener) Close() error { return l.ln.Close() }
 
-type serverConn struct {
-	c *quic.Conn
-}
-
-func (s *serverConn) TLSHandshakeInfo() (wire.TLSHandshakeInfo, error) {
-	state := s.c.ConnectionState()
-	material, err := state.TLS.ExportKeyingMaterial(wire.TLSExporterLabel, wire.EmptyTLSExporterContext(), wire.TLSExporterLen)
-	if err != nil {
-		return wire.TLSHandshakeInfo{}, err
-	}
-	var exporter wire.TLSExporter
-	copy(exporter[:], material)
-	return wire.TLSHandshakeInfo{
-		TLSVersion:     state.TLS.Version,
-		NegotiatedALPN: state.TLS.NegotiatedProtocol,
-		Exporter:       exporter,
-	}, nil
-}
-
-type wrappedStream struct{ *quic.Stream }
-
-func (s wrappedStream) CancelRead(code uint64) {
-	s.Stream.CancelRead(quic.StreamErrorCode(code))
-}
-func (s wrappedStream) CancelWrite(code uint64) {
-	s.Stream.CancelWrite(quic.StreamErrorCode(code))
-}
-
-func (s *serverConn) AcceptStream(ctx context.Context) (server.QuicStream, error) {
-	st, err := s.c.AcceptStream(ctx)
+func dialNW3QUIC(ctx context.Context, pc net.PacketConn, addr string, tlsCfg *tls.Config) (qio.Conn, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
 	}
-	return wrappedStream{st}, nil
-}
-
-func (s *serverConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
-	return s.c.ReceiveDatagram(ctx)
-}
-
-func (s *serverConn) SendDatagram(_ context.Context, b []byte) error {
-	return s.c.SendDatagram(b)
-}
-
-func (s *serverConn) CloseWithError(code uint64, message string) error {
-	return s.c.CloseWithError(quic.ApplicationErrorCode(code), message)
-}
-
-func (s *serverConn) Close() error { return s.c.CloseWithError(0, "") }
-
-func (s *serverConn) Context() context.Context { return s.c.Context() }
-
-func (s *serverConn) LocalAddr() net.Addr { return s.c.LocalAddr() }
-
-func (s *serverConn) RemoteAddr() net.Addr { return s.c.RemoteAddr() }
-
-type multiQuicListener struct {
-	listeners []*serverListener
-	ch        chan acceptRes
-	once      sync.Once
-}
-
-type acceptRes struct {
-	c   server.QuicConn
-	err error
-}
-
-func newMultiQuicListener(listeners []*serverListener) server.QuicListener {
-	if len(listeners) == 1 {
-		return listeners[0]
+	cfg := tlsCfg.Clone()
+	cfg.MinVersion = tls.VersionTLS13
+	cfg.MaxVersion = tls.VersionTLS13
+	cfg.NextProtos = []string{wire.ALPN}
+	cfg.ClientSessionCache = nil
+	c, err := quic.Dial(ctx, pc, udpAddr, cfg, nw3QuicConfig())
+	if err != nil {
+		return nil, err
 	}
-	m := &multiQuicListener{listeners: listeners, ch: make(chan acceptRes)}
-	for _, ln := range listeners {
-		go func(ln *serverListener) {
-			for {
-				c, err := ln.Accept(context.Background())
-				m.ch <- acceptRes{c, err}
-				if err != nil {
-					return
-				}
-			}
-		}(ln)
+	return &nw3Conn{c: c}, nil
+}
+
+type nw3Conn struct{ c *quic.Conn }
+
+func (c *nw3Conn) TLSVersion() uint16 { return c.c.ConnectionState().TLS.Version }
+func (c *nw3Conn) ALPN() string       { return c.c.ConnectionState().TLS.NegotiatedProtocol }
+func (c *nw3Conn) Exporter() ([]byte, error) {
+	st := c.c.ConnectionState().TLS
+	return (&st).ExportKeyingMaterial(wire.ExporterLabel, []byte{}, wire.ExporterLen)
+}
+func (c *nw3Conn) AcceptStream(ctx context.Context) (qio.Stream, error) {
+	st, err := c.c.AcceptStream(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return m
+	return &nw3Stream{Stream: st}, nil
 }
-
-func (m *multiQuicListener) Accept(ctx context.Context) (server.QuicConn, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-m.ch:
-		return res.c, res.err
+func (c *nw3Conn) OpenStream(ctx context.Context) (qio.Stream, error) {
+	st, err := c.c.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
 	}
+	return &nw3Stream{Stream: st}, nil
 }
-
-func (m *multiQuicListener) Close() error {
-	var err error
-	m.once.Do(func() {
-		for _, ln := range m.listeners {
-			if e := ln.Close(); e != nil && err == nil {
-				err = e
-			}
-		}
-	})
-	return err
+func (c *nw3Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return c.c.ReceiveDatagram(ctx)
 }
+func (c *nw3Conn) SendDatagram(b []byte) error { return c.c.SendDatagram(b) }
+func (c *nw3Conn) MaxDatagramSize() int        { return 1200 }
+func (c *nw3Conn) CloseWithError(code uint64, message string) error {
+	return c.c.CloseWithError(quic.ApplicationErrorCode(code), message)
+}
+func (c *nw3Conn) Context() context.Context { return c.c.Context() }
+func (c *nw3Conn) RemoteAddr() net.Addr     { return c.c.RemoteAddr() }
 
-var (
-	_ nquic.Backend        = (*clientBackend)(nil)
-	_ nquic.Session        = (*clientSession)(nil)
-	_ nquic.PreparedStream = (*preparedStream)(nil)
-	_ server.QuicListener  = (*serverListener)(nil)
-	_ server.QuicConn      = (*serverConn)(nil)
-)
+type nw3Stream struct{ *quic.Stream }
+
+func (s *nw3Stream) ID() uint64        { return uint64(s.Stream.StreamID()) }
+func (s *nw3Stream) CloseWrite() error { return s.Stream.Close() }
+func (s *nw3Stream) Close() error      { s.CancelRead(0); return s.Stream.Close() }
+func (s *nw3Stream) SetDeadline(t time.Time) error {
+	return s.Stream.SetDeadline(t)
+}
+func (s *nw3Stream) SetReadDeadline(t time.Time) error  { return s.Stream.SetReadDeadline(t) }
+func (s *nw3Stream) SetWriteDeadline(t time.Time) error { return s.Stream.SetWriteDeadline(t) }

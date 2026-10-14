@@ -12,7 +12,7 @@ import (
 	"github.com/ohmycggk/nowhere-go/internal/upstreamlock"
 	"github.com/ohmycggk/nowhere-go/internal/veccheck"
 	"github.com/ohmycggk/nowhere-go/internal/vectors"
-	"github.com/ohmycggk/nowhere-go/wire"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 // Version is overridden at link time: -ldflags "-X main.Version=v1.2.3"

@@ -9,9 +9,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ohmycggk/nowhere-go/carrier/morph"
-	"github.com/ohmycggk/nowhere-go/wire"
+	nw3morph "github.com/ohmycggk/nowhere-go/morph"
+	"github.com/ohmycggk/nowhere-go/nw2/carrier/morph"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
+	nw3wire "github.com/ohmycggk/nowhere-go/wire"
 )
+
+func fingerprintALPN(nw3 bool) string {
+	if nw3 {
+		return nw3wire.ALPN
+	}
+	return wire.DefaultALPN
+}
 
 // fingerprintTimeout bounds the TCP dial plus TLS handshake for one share link.
 // There is no NOW_HANDSHAKE_TIMEOUT on the Go side, so this mirrors the Rust
@@ -59,13 +68,20 @@ func runFingerprint(raw string) error {
 	}
 
 	query := u.Query()
+	edition, edErr := urlEdition(raw)
+	if edErr != nil {
+		return edErr
+	}
 	morphEnabled := query.Get("morph") == "1"
+	if edition != "nw2" {
+		morphEnabled = query.Get("morph") != "0"
+	}
 	sni := query.Get("sni")
 	if sni == "none" {
 		sni = ""
 	}
 
-	fp, err := fetchCertificateFingerprint(endpoint.tcpAddr(), key, endpoint.host, sni, morphEnabled)
+	fp, err := fetchCertificateFingerprint(endpoint.tcpAddr(), key, endpoint.host, sni, morphEnabled, edition != "nw2")
 	if err != nil {
 		return err
 	}
@@ -73,7 +89,7 @@ func runFingerprint(raw string) error {
 	return nil
 }
 
-func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled bool) (string, error) {
+func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), fingerprintTimeout)
 	defer cancel()
 
@@ -85,7 +101,11 @@ func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled bool)
 
 	var carrier net.Conn = conn
 	if morphEnabled {
-		carrier, err = morph.WrapTCPClient(conn, morph.Derive([]byte(key)))
+		if nw3 {
+			carrier, err = nw3morph.WrapTCPClient(conn, nw3morph.Derive([]byte(key)))
+		} else {
+			carrier, err = morph.WrapTCPClient(conn, morph.Derive([]byte(key)))
+		}
 		if err != nil {
 			return "", fmt.Errorf("failed to retrieve Portal TLS certificate: %w", err)
 		}
@@ -98,7 +118,7 @@ func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled bool)
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
-		NextProtos:         []string{wire.DefaultALPN},
+		NextProtos:         []string{fingerprintALPN(nw3)},
 		InsecureSkipVerify: true,
 		ServerName:         serverName,
 	}
@@ -107,8 +127,8 @@ func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled bool)
 		return "", fmt.Errorf("failed to retrieve Portal TLS certificate: TLS/Morph handshake failed: %w", err)
 	}
 	state := tlsConn.ConnectionState()
-	if state.NegotiatedProtocol != wire.DefaultALPN {
-		return "", fmt.Errorf("failed to retrieve Portal TLS certificate: Portal did not negotiate nw2 ALPN")
+	if state.NegotiatedProtocol != fingerprintALPN(nw3) {
+		return "", fmt.Errorf("failed to retrieve Portal TLS certificate: Portal did not negotiate %s ALPN", fingerprintALPN(nw3))
 	}
 	if len(state.PeerCertificates) == 0 {
 		return "", fmt.Errorf("failed to retrieve Portal TLS certificate: Portal did not provide a TLS certificate")

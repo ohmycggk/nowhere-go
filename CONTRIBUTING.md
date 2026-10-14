@@ -17,8 +17,9 @@ Changes to pairing, session, pool, or close ownership require deterministic canc
 
 ## Re-pinning the upstream lock
 
-`UPSTREAM.lock` records the aligned Nowhere release (version, commit, protocol
-hash, vector-tree hash). To re-pin against a local Nowhere checkout:
+`UPSTREAM.lock` records the Nowhere 3 release (version, commit, protocol hash,
+vector-tree hash). `UPSTREAM-nw2.lock` records the Nowhere 2 release and is what
+`make upstream-lock` rewrites from a local Nowhere 2 checkout:
 
 ```sh
 make upstream-lock   # or: scripts/generate-upstream-lock.sh /path/to/Nowhere

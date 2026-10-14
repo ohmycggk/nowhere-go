@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/ohmycggk/nowhere-go/diagnostic"
+	"github.com/ohmycggk/nowhere-go/nw2/diagnostic"
 )
 
 type logger struct {

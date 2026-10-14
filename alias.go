@@ -2,27 +2,11 @@ package nowhere
 
 import "github.com/ohmycggk/nowhere-go/wire"
 
-// Convenience re-exports; prefer importing wire directly in new code.
+// Convenience re-exports for the default nw3 wire. Prefer importing wire directly.
 
 const (
-	// DefaultALPN is the sole ALPN every Nowhere 2 carrier negotiates.
-	DefaultALPN = wire.DefaultALPN
-	// SessionIDLen is the fixed length of a logical session identifier.
-	SessionIDLen = wire.SessionIDLen
-)
-
-// SessionID identifies one logical session shared by a transport bundle.
-type SessionID = wire.SessionID
-
-// TLSExporter carries the TLS 1.3 exporter bound to one physical connection.
-type TLSExporter = wire.TLSExporter
-
-// AuthTransport is the physical carrier domain separator bound into the auth tag.
-type AuthTransport = wire.AuthTransport
-
-const (
-	// AuthTransportTLSTCP identifies a TLS-over-TCP authentication frame.
-	AuthTransportTLSTCP = wire.AuthTransportTLSTCP
-	// AuthTransportQUIC identifies a QUIC authentication frame.
-	AuthTransportQUIC = wire.AuthTransportQUIC
+	// ALPN is the only ALPN an nw3 carrier offers or accepts.
+	ALPN = wire.ALPN
+	// ExporterLabel is the TLS exporter label bound into every nw3 authentication tag.
+	ExporterLabel = wire.ExporterLabel
 )

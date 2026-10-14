@@ -1,6 +1,6 @@
 # Nowhere-Go
 
-Go implementation of the [Nowhere](https://github.com/NodePassProject/Nowhere) v2 (`nw2`) protocol — both **outbound** (client) and **inbound** (server). The exact upstream version, commit, protocol hash, and vector-tree hash are canonicalized in [`UPSTREAM.lock`](UPSTREAM.lock).
+Go implementation of Nowhere, both **outbound** (client) and **inbound** (server). The default protocol is Nowhere 3 (`nw3`); its upstream pin is [`UPSTREAM.lock`](UPSTREAM.lock). Nowhere 2 (`nw2`) remains available and is pinned in [`UPSTREAM-nw2.lock`](UPSTREAM-nw2.lock).
 
 This is a library, not a standalone proxy. Hosts such as [sing-box](https://github.com/SagerNet/sing-box) or [mihomo](https://github.com/MetaCubeX/mihomo) import it and supply platform pieces: TLS material, dialers, QUIC stacks, and routing.
 
@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** Nowhere 2 uses ALPN `nw2` only. Authentication, Mux frames, and QUIC UDP headers are not interoperable with 1.8 `now/1`. Optional `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract (64-byte TCP prelude, directional UDP keys) is incompatible with Nowhere 2.0.x peers, so upgrade both ends of every Morph-enabled hop together. Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker.
+> **Compatibility:** The default CLI URL is Nowhere 3 (`nw3` only). Nowhere 2 stays available when the URL uses `up`, `down`, `mux`, `next`, or `socks`, and that process speaks `nw2` only. The two versions do not handshake. Optional nw2 `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract is incompatible with Nowhere 2.0.x peers. nw3 Morph defaults on and uses a different key schedule (`nowhere/nw3/morph`). Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker on nw2 only; nw3 has no Mux.
 
 ---
 
@@ -27,9 +27,9 @@ Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) �
 
 | Side | Packages | Responsibility |
 |---|---|---|
-| Shared wire | `wire` | Credentials, exporter-bound auth, FLOW/setup results, TLS Mux, NOWU fragmentation, typed UoT |
-| Outbound | `carrier/tcptls`, `carrier/mux`, `carrier/quic`, `bundle` | Dedicated TLS pool or Mux shards, injected QUIC dial backend, four-matrix session orchestration |
-| Inbound | `server` | Listen / accept orchestration, auth, flow pairing, NOWU/UoT state, QUIC session loop, upstream handoff |
+| Shared wire (nw2) | `nw2/wire` | Credentials, exporter-bound auth, FLOW/setup results, TLS Mux, NOWU fragmentation, typed UoT |
+| Outbound (nw2) | `nw2/carrier/tcptls`, `nw2/carrier/mux`, `nw2/carrier/quic`, `nw2/bundle` | Dedicated TLS pool or Mux shards, injected QUIC dial backend, four-matrix session orchestration |
+| Inbound (nw2) | `nw2/server` | Listen / accept orchestration, auth, flow pairing, NOWU/UoT state, QUIC session loop, upstream handoff |
 
 Hosts keep:
 
@@ -43,20 +43,17 @@ Hosts keep:
 
 ```text
 nowhere-go/
-├── wire/                       # shared nw2 codec, credentials, HOPS, Mux, and typed targets
-├── carrier/
-│   ├── tcptls/                 # TLS/TCP pool and Mux pool (TCPDialer / TLSDialer injected)
-│   ├── mux/                    # TLS Mux stream engine (OPEN/DATA/WINDOW KiB credit)
-│   ├── morph/                  # optional ChaCha20 socket transform below TLS/QUIC
-│   └── quic/                   # outbound QuicBackend interfaces (no implementation)
-├── bundle/                     # outbound CarrierBundle (up/down = tcp|udp)
-├── server/                     # inbound Server / Handler / Upstream
-├── testdata/vectors/           # module-local conformance corpus derived from the pinned Rust tests
-├── cmd/nowhere-check/          # CI helper (vectors / version) — not a proxy
-└── tests/
+├── wire/ morph/ portal/ vector/ egress/   # Nowhere 3, the default stack
+├── qio/ dgram/ flowio/                     # nw3 QUIC injection, datagrams, copy
+├── nw2/
+│   ├── wire/ carrier/ bundle/ server/     # Nowhere 2 stack
+│   └── diagnostic/
+├── testdata/vectors/           # nw2 conformance corpus
+├── cmd/nowhere/                # one binary; URL selects nw3 or nw2
+└── cmd/nowhere-check/          # nw2 vector self-check
 ```
 
-Prefer importing subpackages. The root package only re-exports a few `wire` symbols for convenience.
+Prefer importing subpackages. The sections below document the nw2 library, now imported from `nw2/`.
 
 ---
 
@@ -71,9 +68,9 @@ Typical path used by mihomo / sing-box outbound adapters:
 
 ```go
 import (
-    "github.com/ohmycggk/nowhere-go/bundle"
-    "github.com/ohmycggk/nowhere-go/carrier/tcptls"
-    "github.com/ohmycggk/nowhere-go/wire"
+    "github.com/ohmycggk/nowhere-go/nw2/bundle"
+    "github.com/ohmycggk/nowhere-go/nw2/carrier/tcptls"
+    "github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 credentials, err := wire.NewCredentials(password)
@@ -95,7 +92,7 @@ up, down := wire.CarrierTLSTCP, wire.CarrierQUIC
 b, err := bundle.NewCarrierBundle(bundle.BundleOptions{
 	TCP:         tcp,
 	QUIC:        hostQuicBackend, // required when Up or Down selects QUIC
-	Credentials: credentials,     // bundle owns v1.5 carrier authentication
+	Credentials: credentials,     // bundle owns nw2 carrier authentication
 	PoolSize:    0,               // required when either direction uses QUIC or Mux=1
 	Up:          up,
 	Down:        down,
@@ -113,7 +110,7 @@ if err != nil {
 conn, err := b.OpenTCP(ctx, target)
 ```
 
-See [`bundle/example_test.go`](bundle/example_test.go) for a compile-checked
+See [`nw2/bundle/example_test.go`](nw2/bundle/example_test.go) for a compile-checked
 `tcp/tcp` constructor example. Host adapters remain responsible for concrete
 dialer, TLS, and QUIC implementations.
 
@@ -135,7 +132,7 @@ Two integration styles:
 import (
     "crypto/tls"
 
-    "github.com/ohmycggk/nowhere-go/server"
+    "github.com/ohmycggk/nowhere-go/nw2/server"
 )
 
 cfg, err := server.NewConfig(server.ConfigOptions{
@@ -192,7 +189,7 @@ type Upstream interface {
 The Upstream calls `readiness.Ready()` only after the target route is established, or `readiness.Reject(err)` when setup fails. The selected downlink carries the resulting typed setup result.
 
 `server.FlowInfoFromContext(ctx)` exposes the current FLOW metadata to custom
-Upstream implementations without changing the `Upstream` interface. In 1.7+,
+Upstream implementations without changing the `Upstream` interface.
 `FlowInfo.Hops` is the incoming native forwarding budget.
 
 ### Native Portal chaining

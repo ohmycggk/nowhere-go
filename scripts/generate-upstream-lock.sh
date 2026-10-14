@@ -1,6 +1,7 @@
 #!/bin/sh
-# Regenerate UPSTREAM.lock and internal/upstreamlock/generated.go from a local
-# Nowhere checkout (https://github.com/NodePassProject/Nowhere).
+# Regenerate UPSTREAM-nw2.lock and internal/upstreamlock/generated.go from a local
+# Nowhere 2 checkout (https://github.com/NodePassProject/Nowhere).
+# UPSTREAM.lock is the Nowhere 3 pin and is left untouched.
 #
 # Usage: scripts/generate-upstream-lock.sh [/path/to/Nowhere]
 #
@@ -22,6 +23,6 @@ fi
 
 exec go run ./internal/upstreamlock/tool.go \
 	-upstream "$upstream" \
-	-lock UPSTREAM.lock \
+	-lock UPSTREAM-nw2.lock \
 	-vectors testdata/vectors \
 	-write

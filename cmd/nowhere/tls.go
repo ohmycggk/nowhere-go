@@ -14,7 +14,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/ohmycggk/nowhere-go/wire"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 func loadServerTLS(cfg appConfig) (*tls.Config, error) {

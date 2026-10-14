@@ -12,10 +12,18 @@ and all clients.
 
 ### Added
 
+- Nowhere 3 (`nw3`) Portal, Vector, and Egress beside the existing Nowhere 2
+  stack. A URL with no `up`, `down`, `mux`, `next`, or `socks` parameter starts
+  nw3 and offers only ALPN `nw3`. A URL that uses any of those parameters starts
+  nw2 and offers only ALPN `nw2`. The two versions do not share a handshake,
+  and one process runs only the selected version. nw3 follows Nowhere 3.0
+  (`501138f`): 16-byte role authentication, one-byte FlowStart, Egress slot
+  registration, and HMAC Morph under `nowhere/nw3/morph`. `UPSTREAM.lock` pins
+  that Nowhere 3 commit. The previous nw2 pin lives in `UPSTREAM-nw2.lock`.
 - Alignment with upstream Nowhere v2.2.1
   (commit `0000696910dc9ee56c3ec87995a0b1ca8e4fc11b`). The `nw2` wire contract
   is unchanged, so `nowhere-go` stays interoperable with Nowhere 2.0.x–2.2.x
-  peers; `UPSTREAM.lock` and the vector manifest are re-pinned.
+  peers; `UPSTREAM-nw2.lock` and the vector manifest are re-pinned.
 - Toolbox subcommands: `nowhere generate-key` prints one 32-character lowercase
   hex key; `nowhere fingerprint` accepts `nowhere://` share links and prints the
   leaf certificate SHA-256 suitable for `pin=`; `nowhere probe <vector-url>
@@ -28,7 +36,7 @@ and all clients.
   outbound control and relay sockets, and `next` hops. `dial` stays mutually
   exclusive with them.
 - `scripts/generate-upstream-lock.sh` and `make upstream-lock` regenerate
-  `UPSTREAM.lock` and `internal/upstreamlock/generated.go` from a local
+  `UPSTREAM-nw2.lock` and `internal/upstreamlock/generated.go` from a local
   Nowhere checkout, with the protocol-hash coverage set documented.
 - Portal SOCKS5 outbound (`portal://...?socks=host:port`) for TCP CONNECT and
   UDP ASSOCIATE. There is no direct fallback; `socks` and `next` stay mutually
@@ -39,6 +47,10 @@ and all clients.
 
 ### Changed
 
+- **Breaking (CLI default):** `nowhere <url>` with no nw2-only option (`up`,
+  `down`, `mux`, `next`, `socks`) is Nowhere 3. Morph defaults to on and the
+  shared key must be exactly 32 lowercase hex characters. Keep an nw2-only
+  option, for example `socks=` or `up=tcp`, to start the previous stack.
 - **Breaking (client trust):** client carriers now verify the Portal
   certificate against the system trust roots and the endpoint host name unless
   `pin=` is set; `sni=none` no longer disables verification, and missing system
@@ -82,6 +94,13 @@ and all clients.
 
 ### Fixed
 
+- The nw3 Vector SOCKS5 server accepts a UDP ASSOCIATE request again. The
+  request address is a source constraint, not a dial target, so the standard
+  `0.0.0.0:0` form no longer fails target validation and drop the connection
+  without a reply. A domain or foreign source IP is refused with reply `0x02`,
+  and datagrams must come from the control peer, pinned to the requested port
+  when the request names one. The same unchecked request parse applies to the
+  nw2 Vector path.
 - A failed pooled-carrier dial no longer leaves the failed shard registered in
   the pool while the `Open` call falls back to a live carrier.
 - Deliver Mux DATA, FIN, and RESET when the inbound queue is full instead of
@@ -132,7 +151,7 @@ and all clients.
 
 - Align the protocol oracle, vectors, Mux engine, and lock metadata with
   Nowhere v2.0.0 at upstream commit `0453efd28659468a4be5cccc7a16d1cd67bbb1ff`.
-  The sole ALPN is `nw2`. 1.8 `now/1` peers cannot complete a handshake.
+  The sole ALPN is `nw2`.
 - Derive AuthFrame keys from salt `nowhere/nw2/auth-root`.
 - Constrain flow IDs to `1..=0x3fffffff` on FlowHeader, Mux, and QUIC UDP.
 - Replace the 8-byte STREAM/WINDOW/DATAGRAM Mux header with the 7-byte
@@ -158,62 +177,3 @@ and all clients.
 
 - Document the nw2 ALPN, 7-byte Mux frames, packed QUIC UDP headers, 30-bit
   flow IDs, occupancy Mux pool, Morph shared-key option, and release artifacts.
-
-## v1.7.0 - 2026-08-12
-
-### Changed
-
-- Align the protocol oracle, FLOW vectors, and lock metadata with Nowhere
-  v1.7.0 at upstream commit `362091688e36b6f305f17b921aa39d66886d1462`.
-- Encode the Nowhere 1.7 HOPS budget in the FLOW header high three bits and
-  include it in OPEN/ATTACH metadata matching.
-- Close inbound flow admission before shutdown, reject pending or late setup
-  with `FLOW_LIMIT`, and drain already-READY relays within the shared shutdown
-  deadline.
-
-### Added
-
-- Add explicit-hop TCP/UDP Bundle APIs while preserving HOPS=0 for all existing
-  direct-open APIs.
-- Add `server.FlowInfoFromContext` and non-owning `server.PortalUpstream` for
-  native TCP/UDP Portal chaining across all carrier matrices, including hop
-  limiting and exact downstream setup-result propagation.
-
-### Documentation
-
-- Correct the outbound example for the current v1.5 bundle-owned credentials
-  API and add a compile-checked constructor example.
-- Document 1.5/1.6/1.7 compatibility, native Portal construction, and the
-  required Server-before-Bundle shutdown order.
-- Document the public server package and previously undocumented exported API
-  groups.
-- Update the security support policy for the v0.5 preview line.
-
-## v0.5.1-rc.1 - 2026-07-21
-
-### Changed
-
-- Align the protocol baseline and vector metadata with Nowhere v1.5.1 at
-  upstream commit `1133040065029678c8b76b2b3fda9efa3260ada9`.
-- Keep UDP flows alive when a retried QUIC DATAGRAM remains too large, while
-  reporting the dropped packet through diagnostics.
-- Remove the eager UDP fragment collection API in favor of lazy fragment
-  encoding.
-
-## v0.5.0-rc.6 - 2026-07-20
-
-### Added
-
-- Implement the Nowhere v1.5 connection-bound authentication, FLOW/setup
-  result, NOWU fragmentation, and typed UoT data plane.
-- Add the four-matrix outbound bundle and Portal-like inbound server core.
-- Add host-injected QUIC contracts, adapter conformance checks, bounded UDP
-  reassembly, PMTU retry handling, and structured diagnostics.
-- Add Rust-exported vector round-trip checks, wire fuzz targets, race/shuffle
-  CI, and deterministic lifecycle tests.
-
-### Changed
-
-- Bind bundle credentials and ALPN inside the shared core.
-- Harden TLS/TCP pool sizing, close ownership, setup-result propagation, and
-  server resource limits.

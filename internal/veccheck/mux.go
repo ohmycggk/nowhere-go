@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/ohmycggk/nowhere-go/internal/vectors"
-	"github.com/ohmycggk/nowhere-go/wire"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 func checkMux(path string) (int, error) {

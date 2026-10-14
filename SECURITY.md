@@ -3,8 +3,9 @@
 ## Supported versions
 
 Security fixes are provided for the latest release in the **v2.1** line, which
-tracks Nowhere 2 (`nw2`). The current development baseline is recorded in
-`UPSTREAM.lock`. The v2.0 and older lines are unsupported after host adapters
+tracks Nowhere 2 (`nw2`), pinned in `UPSTREAM-nw2.lock`. The current
+development baseline is Nowhere 3, recorded in `UPSTREAM.lock`. The v2.0 and
+older lines are unsupported after host adapters
 migrate.
 
 Hosts must pin an explicit tagged release and upgrade the Rust Portal and every

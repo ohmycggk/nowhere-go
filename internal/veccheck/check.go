@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/ohmycggk/nowhere-go/internal/vectors"
-	"github.com/ohmycggk/nowhere-go/wire"
+	"github.com/ohmycggk/nowhere-go/nw2/wire"
 )
 
 // CheckDir validates all known vector files under dir. Returns the number of
