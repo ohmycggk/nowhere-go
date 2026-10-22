@@ -62,36 +62,94 @@ func expand(root [32]byte, info string) [32]byte {
 type preludePolicy uint8
 
 const (
-	preludeLow7 preludePolicy = iota
+	// preludeFade is the Nowhere 3.0.1 default. It is not negotiated.
+	preludeFade preludePolicy = iota
 	preludeFull8
+	preludeLow7
 )
 
 func preludePolicyFromEnv() (preludePolicy, error) {
 	value, ok := os.LookupEnv(preludeEnv)
 	if !ok {
-		return preludeFull8, nil
+		return preludeFade, nil
 	}
 	switch value {
-	case "low7":
-		return preludeLow7, nil
+	case "fade":
+		return preludeFade, nil
 	case "full8":
 		return preludeFull8, nil
+	case "low7":
+		return preludeLow7, nil
 	default:
-		return 0, fmt.Errorf("%s must be low7 or full8", preludeEnv)
+		return 0, fmt.Errorf("%s must be fade, full8 or low7", preludeEnv)
 	}
 }
 
 func generatePrelude(policy preludePolicy) ([preludeLen]byte, error) {
+	return generatePreludeWith(policy, func(dst []byte) error {
+		_, err := io.ReadFull(rand.Reader, dst)
+		return err
+	})
+}
+
+func generatePreludeWith(policy preludePolicy, fill func([]byte) error) ([preludeLen]byte, error) {
 	var prelude [preludeLen]byte
-	if _, err := io.ReadFull(rand.Reader, prelude[:]); err != nil {
+	if err := fill(prelude[:]); err != nil {
 		return prelude, err
 	}
-	if policy == preludeLow7 {
+	switch policy {
+	case preludeFade:
+		var boundaries [2]byte
+		if err := fill(boundaries[:]); err != nil {
+			return prelude, err
+		}
+		aSample, err := sampleBelow(boundaries[0], 5, fill)
+		if err != nil {
+			return prelude, err
+		}
+		bSample, err := sampleBelow(boundaries[1], 17, fill)
+		if err != nil {
+			return prelude, err
+		}
+		a := 8 + int(aSample)
+		b := 16 + int(bSample)
+		for i := 0; i < a; i++ {
+			printable, err := sampleBelow(prelude[i], 95, fill)
+			if err != nil {
+				return prelude, err
+			}
+			prelude[i] = 0x20 + printable
+		}
+		for i := a; i < b; i++ {
+			prelude[i] &= 0x7f
+		}
+	case preludeFull8:
+	case preludeLow7:
 		for i := range prelude {
 			prelude[i] &= 0x7f
 		}
+	default:
+		return prelude, fmt.Errorf("%s must be fade, full8 or low7", preludeEnv)
 	}
 	return prelude, nil
+}
+
+// sampleBelow returns a uniform value in [0, upper) from one random byte.
+// Bytes at or above 256-256%upper are rejected and replaced, so the modulo
+// does not bias the result.
+func sampleBelow(b byte, upper byte, fill func([]byte) error) (byte, error) {
+	if upper == 0 {
+		return 0, errors.New("nw3: empty Morph sample range")
+	}
+	limit := 256 - 256%int(upper)
+	for int(b) >= limit {
+		var next [1]byte
+		if err := fill(next[:]); err != nil {
+			return 0, err
+		}
+		b = next[0]
+	}
+	return b % upper, nil
 }
 
 // WrapTCPClient writes the 64-byte prelude and 12-byte nonce, then masks TLS bytes.
