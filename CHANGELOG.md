@@ -26,7 +26,10 @@ and all clients.
 ### Changed
 
 - CI: annotate the `1.20.x` matrix leg as EOL regression testing only — it
-  never receives security fixes and is not used for release builds.
+  never receives security fixes and is not used for release builds. setup-go
+  now uses `check-latest: true` so the `1.26.x` leg resolves against the live
+  version manifest instead of the runner's stale toolcache (which still held
+  the vulnerable go1.26.9 and was correctly rejected by `nowhere-check`).
 
 ## v3.0.0 - 2026-10-14
 
