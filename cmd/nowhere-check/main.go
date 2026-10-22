@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"github.com/ohmycggk/nowhere-go/internal/upstreamlock"
 	"github.com/ohmycggk/nowhere-go/internal/veccheck"
@@ -40,6 +41,10 @@ func main() {
 	}
 
 	printVersion()
+	if err := checkBuildToolchain(); err != nil {
+		fmt.Fprintf(os.Stderr, "toolchain: %v\n", err)
+		os.Exit(1)
+	}
 	if *selfCheck {
 		if err := runSelfCheck(); err != nil {
 			fmt.Fprintf(os.Stderr, "self-check: %v\n", err)
@@ -72,6 +77,88 @@ func resolveVersion() string {
 		}
 	}
 	return Version
+}
+
+// fixedToolchain maps a Go minor series to the earliest patch release carrying
+// the CVE-2026-111943 crypto/x509 mitigation (untrusted eMudhra intermediate
+// certificates). Extend it when a newer minor series ships its own fixed patch.
+var fixedToolchain = map[[2]int]string{
+	{1, 26}: "1.26.10",
+	{1, 27}: "1.27.3",
+}
+
+// checkBuildToolchain reports whether this binary was built with a Go
+// toolchain that blocks the compromised intermediate certificates from
+// CVE-2026-111943 (Red Hat RHSB-2026-012, golang/go#82345). Builds on
+// supported-but-vulnerable series fail; EOL series (which can never receive
+// the fix and are test-only) only warn.
+func checkBuildToolchain() error {
+	v := runtime.Version()
+	if strings.HasPrefix(v, "devel") {
+		fmt.Println("toolchain: devel build; skipping CVE-2026-111943 check")
+		return nil
+	}
+	rel := strings.TrimPrefix(v, "go")
+	triple, ok := versionTriple(rel)
+	if !ok {
+		fmt.Printf("toolchain: go%s (unrecognized version; skipping CVE-2026-111943 check)\n", rel)
+		return nil
+	}
+	fixed, known := fixedToolchain[[2]int{triple[0], triple[1]}]
+	if !known {
+		if triple[0] == 1 && triple[1] < 26 {
+			fmt.Printf("toolchain: go%s predates the CVE-2026-111943 crypto/x509 fix and is EOL; rebuild release artifacts with go1.26.10+ or go1.27.3+\n", rel)
+			return nil
+		}
+		fmt.Printf("toolchain: go%s (newer than the CVE-2026-111943 advisory)\n", rel)
+		return nil
+	}
+	if verLessThan(rel, fixed) {
+		return fmt.Errorf("go%s lacks the CVE-2026-111943 crypto/x509 mitigation (fixed in go%s); rebuild with go%s or newer", rel, fixed, fixed)
+	}
+	fmt.Printf("toolchain: go%s includes the CVE-2026-111943 crypto/x509 mitigation\n", rel)
+	return nil
+}
+
+// versionTriple parses a dotted release version such as "1.27.3" into a
+// comparable triple. It accepts only digit components and requires at least
+// major.minor.
+func versionTriple(s string) ([3]int, bool) {
+	var t [3]int
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return t, false
+	}
+	for i, p := range parts {
+		if p == "" {
+			return t, false
+		}
+		n := 0
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return t, false
+			}
+			n = n*10 + int(r-'0')
+		}
+		t[i] = n
+	}
+	return t, true
+}
+
+// verLessThan reports whether dotted version a sorts before b. Unparseable
+// inputs never compare as less (callers pre-filter unrecognized versions).
+func verLessThan(a, b string) bool {
+	ta, oka := versionTriple(a)
+	tb, okb := versionTriple(b)
+	if !oka || !okb {
+		return false
+	}
+	for i := range ta {
+		if ta[i] != tb[i] {
+			return ta[i] < tb[i]
+		}
+	}
+	return false
 }
 
 func runSelfCheck() error {

@@ -8,7 +8,27 @@ release.
 A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
 and all clients.
 
-## Unreleased
+## v3.0.1 - 2026-10-22
+
+### Security
+
+- Release with a Go toolchain carrying the CVE-2026-111943 `crypto/x509`
+  mitigation (Red Hat RHSB-2026-012, golang/go#82345): certificate-chain
+  verification now rejects the compromised eMudhra intermediate certificates.
+  `v3.0.0` and earlier release binaries were built with a pre-fix toolchain.
+  The exposed code path is the unpinned client TLS mode (`pin` unset or
+  `none`), which verifies against the system CA pool; pinned links verify a
+  leaf SHA-256 and were never exposed, and server-side TLS is unaffected.
+  `release.yml` now fails dist builds on toolchains older than `go1.26.10` /
+  `go1.27.3`, and `nowhere-check` reports (and enforces on supported series)
+  whether the build toolchain carries the fix.
+
+### Changed
+
+- CI: annotate the `1.20.x` matrix leg as EOL regression testing only — it
+  never receives security fixes and is not used for release builds.
+
+## v3.0.0 - 2026-10-14
 
 ### Added
 

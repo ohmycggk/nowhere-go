@@ -41,6 +41,20 @@ jobs:
         with:
           go-version: stable
           cache: true
+      - name: Require fixed toolchain (CVE-2026-111943)
+        run: |
+          v="$(go env GOVERSION)"
+          case "$v" in
+            go1.26.*) fixed=1.26.10 ;;
+            go1.*)    fixed=1.27.3 ;;
+            *) echo "release builds need a tagged Go toolchain, got '$v'" >&2; exit 1 ;;
+          esac
+          lowest="$(printf '%s\n%s\n' "$fixed" "${v#go}" | sort -V | head -n1)"
+          if [ "$lowest" != "$fixed" ]; then
+            echo "go${v#go} predates the CVE-2026-111943 crypto/x509 fix (fixed in go${fixed})" >&2
+            exit 1
+          fi
+          echo "toolchain ${v} includes the CVE-2026-111943 crypto/x509 fix (>= go${fixed})"
       - name: Version
         id: meta
         run: |

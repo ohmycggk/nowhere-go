@@ -22,7 +22,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Align with go.mod (1.20) + CLI toolchain (quic-go needs 1.26) + latest stable
+        # Align with go.mod (1.20) + CLI toolchain (quic-go needs 1.26) + latest stable.
+        # 1.20.x is EOL upstream: regression testing only. It never receives security
+        # fixes (e.g. CVE-2026-111943 crypto/x509) and is never used for release
+        # builds; release.yml gates dist on a fixed toolchain.
         go: ["1.20.x", "1.26.x", "stable"]
     steps:
       - uses: actions/checkout@v4
