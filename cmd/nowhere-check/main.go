@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -62,9 +63,24 @@ func printVersion() {
 	fmt.Printf("nowhere-check %s\n", resolveVersion())
 	fmt.Printf("go %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("module github.com/ohmycggk/nowhere-go\n")
-	fmt.Printf("upstream nowhere v%s %s\n", upstreamlock.Version, upstreamlock.Commit)
-	fmt.Printf("upstream lock protocol=%s vectors=%s:%s\n",
+	fmt.Printf("upstream nowhere (nw2) v%s %s\n", upstreamlock.Version, upstreamlock.Commit)
+	fmt.Printf("upstream lock (nw2) protocol=%s vectors=%s:%s\n",
 		upstreamlock.ProtocolSHA256, upstreamlock.VectorTreeHashAlgorithm, upstreamlock.VectorTreeSHA256)
+	if nw3, err := readNW3Lock(); err == nil {
+		fmt.Printf("upstream nowhere (nw3) v%s %s\n", nw3.Version, nw3.Commit)
+		fmt.Printf("upstream lock (nw3) protocol=%s vectors=%s:%s\n",
+			nw3.ProtocolSHA256, nw3.VectorTreeHashAlgorithm, nw3.VectorTreeSHA256)
+	}
+}
+
+// readNW3Lock loads UPSTREAM.lock beside the nw2 corpus so the report covers
+// both protocol baselines.
+func readNW3Lock() (upstreamlock.Lock, error) {
+	dir, err := vectors.Dir()
+	if err != nil {
+		return upstreamlock.Lock{}, err
+	}
+	return upstreamlock.Read(filepath.Join(moduleRoot(dir), "UPSTREAM.lock"))
 }
 
 func resolveVersion() string {
@@ -222,17 +238,53 @@ func runVectors(dirFlag string) error {
 			return err
 		}
 	}
-	n, err := veccheck.CheckDir(dir)
+	nw3Dir := filepath.Join(dir, "nw3")
+
+	nw2, err := veccheck.CheckDir(dir)
 	if err != nil {
 		return err
 	}
-	treeHash, err := upstreamlock.TreeHash(dir)
+	// UPSTREAM-nw2.lock pins the nw2 corpus directory itself (excluding nw3/).
+	nw2Tree, err := upstreamlock.TreeHash(dir, "nw3")
 	if err != nil {
 		return err
 	}
-	if treeHash != upstreamlock.VectorTreeSHA256 {
-		return fmt.Errorf("vector tree hash %s, want %s", treeHash, upstreamlock.VectorTreeSHA256)
+	if nw2Tree != upstreamlock.VectorTreeSHA256 {
+		return fmt.Errorf("nw2 vector tree hash %s, want %s", nw2Tree, upstreamlock.VectorTreeSHA256)
 	}
-	fmt.Printf("vectors: ok (%d cases) dir=%s\n", n, dir)
+
+	nw3, err := veccheck.CheckNW3Dir(nw3Dir)
+	if err != nil {
+		return err
+	}
+	// UPSTREAM.lock pins the nw3 corpus directory, giving both locks the same
+	// vector_tree_sha256 semantics: sha256-tree-v1 over their own corpus.
+	nw3Lock, err := upstreamlock.Read(filepath.Join(moduleRoot(dir), "UPSTREAM.lock"))
+	if err != nil {
+		return err
+	}
+	nw3Tree, err := upstreamlock.TreeHash(nw3Dir)
+	if err != nil {
+		return err
+	}
+	if nw3Tree != nw3Lock.VectorTreeSHA256 {
+		return fmt.Errorf("nw3 vector tree hash %s, want %s", nw3Tree, nw3Lock.VectorTreeSHA256)
+	}
+
+	fmt.Printf("vectors: ok (%d nw2 + %d nw3 cases) dir=%s\n", nw2, nw3, dir)
 	return nil
+}
+
+// moduleRoot walks up from dir to the directory holding UPSTREAM.lock.
+func moduleRoot(dir string) string {
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "UPSTREAM.lock")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "."
+		}
+		dir = parent
+	}
 }

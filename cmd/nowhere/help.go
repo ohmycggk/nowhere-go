@@ -59,7 +59,8 @@ Nowhere 2 options (unchanged): morph default 0, up/down/mux, socks, next,
 Portal keys of 32-64 lowercase hex, and free-form Vector keys.
 
 Environment:
-  NOW_MORPH_TCP_PRELUDE          TCP Morph prelude: full8 (default) or low7.
+  NOW_MORPH_TCP_PRELUDE          nw3 TCP Morph prelude: fade (default), full8, or low7.
+                                 nw2 stays full8 (default) or low7 and rejects fade.
 
 The TUI and status observer are not included in this Go binary.
 `
