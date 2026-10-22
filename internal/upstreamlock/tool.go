@@ -22,18 +22,29 @@ import (
 func main() {
 	var (
 		upstream = flag.String("upstream", "", "path to a local Nowhere checkout (any ref)")
-		lockPath = flag.String("lock", "UPSTREAM-nw2.lock", "path to UPSTREAM-nw2.lock")
+		lockPath = flag.String("lock", "UPSTREAM-nw2.lock", "path to the lock file to regenerate")
 		vectors  = flag.String("vectors", "testdata/vectors", "path to the local vector corpus")
 		write    = flag.Bool("write", false, "rewrite the lock file and generated.go instead of printing")
 	)
 	flag.Parse()
 
 	if *upstream == "" {
-		fatal("usage: upstream-lock -upstream /path/to/Nowhere [-write]")
+		fatal("usage: upstream-lock -upstream /path/to/Nowhere [-lock UPSTREAM.lock] [-write]")
 	}
 	if err := os.Chdir(mustRepoRoot()); err != nil {
 		fatal(err.Error())
 	}
+	// UPSTREAM.lock is the Nowhere 3 pin and hashes its own corpus directory
+	// (testdata/vectors/nw3). UPSTREAM-nw2.lock hashes testdata/vectors minus
+	// that subdirectory and is the one mirrored into generated.go.
+	nw3 := filepath.Base(*lockPath) == "UPSTREAM.lock"
+	var skips []string
+	if nw3 {
+		*vectors = filepath.Join(*vectors, "nw3")
+	} else {
+		skips = append(skips, "nw3")
+	}
+
 	lock, err := upstreamlock.Read(*lockPath)
 	if err != nil {
 		fatal(err.Error())
@@ -48,10 +59,13 @@ func main() {
 		fatal(err.Error())
 	}
 	protocol, err := upstreamlock.ProtocolHash(*upstream)
+	if nw3 {
+		protocol, err = upstreamlock.ProtocolHashNW3(*upstream)
+	}
 	if err != nil {
 		fatal(err.Error())
 	}
-	tree, err := upstreamlock.TreeHash(*vectors)
+	tree, err := upstreamlock.TreeHash(*vectors, skips...)
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -67,6 +81,10 @@ func main() {
 	}
 	if err := writeLock(*lockPath, lock); err != nil {
 		fatal(err.Error())
+	}
+	if nw3 {
+		fmt.Printf("rewrote %s for Nowhere %s @ %s\n", *lockPath, lock.Version, lock.Commit)
+		return
 	}
 	if err := writeGenerated(lock); err != nil {
 		fatal(err.Error())

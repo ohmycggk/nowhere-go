@@ -1,16 +1,23 @@
 #!/bin/sh
-# Regenerate UPSTREAM-nw2.lock and internal/upstreamlock/generated.go from a local
-# Nowhere 2 checkout (https://github.com/NodePassProject/Nowhere).
-# UPSTREAM.lock is the Nowhere 3 pin and is left untouched.
+# Regenerate the upstream lock files from a local Nowhere checkout
+# (https://github.com/NodePassProject/Nowhere).
 #
 # Usage: scripts/generate-upstream-lock.sh [/path/to/Nowhere]
 #
-# The lock records the upstream identity (version from Cargo.toml, commit from
-# git HEAD) and two hashes:
-#   protocol_sha256      sha256-tree-v1 over the wire-defining Rust sources
-#                        (src/protocol/**, src/mux/wire.rs,
+# Two locks, one semantics. Each records the upstream identity (version from
+# Cargo.toml, commit from git HEAD) and two sha256-tree-v1 hashes:
+#   protocol_sha256      over the wire-defining Rust sources
+#                        (src/protocol/**, src/mux/wire.rs for nw2 only,
 #                        src/transport/morph.rs, src/transport/morph/**)
-#   vector_tree_sha256   sha256-tree-v1 over testdata/vectors
+#   vector_tree_sha256   over that lock's own corpus directory
+#
+# UPSTREAM-nw2.lock   Nowhere 2 pin; mirrors into internal/upstreamlock/generated.go
+#                     vectors: testdata/vectors (excluding the nw3/ subdirectory)
+# UPSTREAM.lock       Nowhere 3 pin
+#                     vectors: testdata/vectors/nw3
+#
+# The nw3 corpus (testdata/vectors/nw3) is exported from the pinned Nowhere
+# commit's src/tests/protocol/vectors.json; refresh it alongside the lock.
 set -eu
 
 upstream="${1:-../Nowhere}"
@@ -21,8 +28,14 @@ if [ ! -f "$upstream/Cargo.toml" ]; then
 	exit 1
 fi
 
-exec go run ./internal/upstreamlock/tool.go \
+go run ./internal/upstreamlock/tool.go \
 	-upstream "$upstream" \
 	-lock UPSTREAM-nw2.lock \
+	-vectors testdata/vectors \
+	-write
+
+go run ./internal/upstreamlock/tool.go \
+	-upstream "$upstream" \
+	-lock UPSTREAM.lock \
 	-vectors testdata/vectors \
 	-write
