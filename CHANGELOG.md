@@ -10,26 +10,62 @@ and all clients.
 
 ## v3.0.1 - 2026-10-22
 
-### Security
+### Changed
 
-- Release with a Go toolchain carrying the CVE-2026-111943 `crypto/x509`
+- Protocol baseline is Nowhere 3.0.1 (`00000e06554e3f8119dace184967bee46138209f`),
+  matching the upstream release. This is a wire-contract change for nw3 peers
+  and requires a lockstep upgrade of the Rust Portal and all nw3 clients.
+  - FlowStart is one byte: bit 0 identifies the Flow type (`0` TCP, `1` UDP).
+    Senders MUST set bits 1–7 to zero; receivers MUST now ignore them instead
+    of rejecting the Flow. The type is taken from the low bit (`value & 1`), so
+    a reserved bit no longer invalidates an otherwise well-formed request.
+  - The nw3 TCP Morph prelude defaults to `fade` when `NOW_MORPH_TCP_PRELUDE`
+    is unset: each flow independently samples uniform boundaries A in `[8,12]`
+    and B in `[16,32]`, then writes printable ASCII (`0x20`–`0x7E`) on `[0,A)`,
+    low7 on `[A,B)` and full8 on `[B,64)`. Boundary and printable draws use
+    rejection sampling so no modulo bias is introduced. `full8` and `low7`
+    remain selectable. The prelude stays 64 bytes and is still not interpreted
+    by the receiver.
+  - nw2 keeps its 2.2 default of `full8`, still accepts only `low7`/`full8`,
+    and rejects `fade`.
+- Release builds run on a Go toolchain carrying the CVE-2026-111943 `crypto/x509`
   mitigation (Red Hat RHSB-2026-012, golang/go#82345): certificate-chain
-  verification now rejects the compromised eMudhra intermediate certificates.
+  verification rejects the compromised eMudhra intermediate certificates.
   `v3.0.0` and earlier release binaries were built with a pre-fix toolchain.
   The exposed code path is the unpinned client TLS mode (`pin` unset or
   `none`), which verifies against the system CA pool; pinned links verify a
   leaf SHA-256 and were never exposed, and server-side TLS is unaffected.
-  `release.yml` now fails dist builds on toolchains older than `go1.26.10` /
+  `release.yml` fails dist builds on toolchains older than `go1.26.10` /
   `go1.27.3`, and `nowhere-check` reports (and enforces on supported series)
   whether the build toolchain carries the fix.
-
-### Changed
-
 - CI: annotate the `1.20.x` matrix leg as EOL regression testing only — it
   never receives security fixes and is not used for release builds. setup-go
   now uses `check-latest: true` so the `1.26.x` leg resolves against the live
   version manifest instead of the runner's stale toolcache (which still held
   the vulnerable go1.26.9 and was correctly rejected by `nowhere-check`).
+
+### Fixed
+
+- `UPSTREAM.lock` `protocol_sha256` is now reproducible. The value was computed
+  over the wire-defining Rust sources in filesystem order, which is not stable
+  across machines (it could place `src/transport/morph/tcp.rs` before
+  `src/transport/morph.rs`), so the pinned hash did not match the documented
+  `sha256-tree-v1` definition and could not be regenerated. The file list is
+  now sorted before hashing. Both locks are re-pinned:
+  `UPSTREAM.lock` `5ac8a882` (nw3, Nowhere 3.0.1) and `UPSTREAM-nw2.lock`
+  `786755c9` (nw2, Nowhere 2.2.1).
+
+### Added
+
+- nw3 conformance corpus under `testdata/vectors/nw3`, exported from the
+  pinned Nowhere commit's `src/tests/protocol/vectors.json` plus Morph KDF
+  vectors. `nowhere-check` validates both corpora and both locks. Both locks
+  now define `vector_tree_sha256` the same way: `sha256-tree-v1` over the
+  files of their own corpus directory (`testdata/vectors/nw3` for nw3,
+  `testdata/vectors` excluding `nw3/` for nw2).
+- `scripts/generate-upstream-lock.sh` regenerates both lock files from a local
+  Nowhere checkout; `internal/upstreamlock/tool.go` gained `-lock UPSTREAM.lock`
+  for the nw3 pin and `ProtocolHashNW3` for its Mux-free coverage set.
 
 ## v3.0.0 - 2026-10-14
 

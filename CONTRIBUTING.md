@@ -17,20 +17,38 @@ Changes to pairing, session, pool, or close ownership require deterministic canc
 
 ## Re-pinning the upstream lock
 
-`UPSTREAM.lock` records the Nowhere 3 release (version, commit, protocol hash,
-vector-tree hash). `UPSTREAM-nw2.lock` records the Nowhere 2 release and is what
-`make upstream-lock` rewrites from a local Nowhere 2 checkout:
+Two lock files pin the two protocol baselines. Both record the upstream identity
+(version from `Cargo.toml`, commit from `git HEAD`) and two `sha256-tree-v1`
+hashes:
+
+| Lock | Baseline | `protocol_sha256` coverage | `vector_tree_sha256` coverage |
+|---|---|---|---|
+| `UPSTREAM.lock` | Nowhere 3 (`nw3`) | `src/protocol/**`, `src/transport/morph.rs`, `src/transport/morph/**` | `testdata/vectors/nw3` |
+| `UPSTREAM-nw2.lock` | Nowhere 2 (`nw2`) | the above plus `src/mux/wire.rs` | `testdata/vectors`, excluding `nw3/` |
+
+`protocol_sha256` covers the wire-defining Rust sources and nothing else, so it
+changes exactly when the wire contract does; the Rust repository ships no such
+tooling. nw3 has no Mux, hence the narrower nw3 set (`ProtocolHashNW3`).
+`vector_tree_sha256` is `sha256-tree-v1` over that lock's own corpus directory,
+so both locks share one semantics.
+
+The file name list is sorted before hashing (`sha256-tree-v1` requires a sorted
+list); never hash in filesystem order, which is not stable across machines.
+
+Regenerate both locks from a local Nowhere checkout:
 
 ```sh
 make upstream-lock   # or: scripts/generate-upstream-lock.sh /path/to/Nowhere
 ```
 
-`protocol_sha256` is a `sha256-tree-v1` hash over the wire-defining Rust sources
-only (`src/protocol/**`, `src/mux/wire.rs`, `src/transport/morph.rs`,
-`src/transport/morph/**`), so it changes exactly when the wire contract does;
-the Rust repository ships no such tooling. Run the script after editing
-`testdata/vectors/manifest.json` so the vector-tree hash tracks the corpus, and
+The script rewrites both lock files and `internal/upstreamlock/generated.go`
+(mirroring the nw2 lock). Run it after editing `testdata/vectors/manifest.json`
+or `testdata/vectors/nw3/` so the vector-tree hashes track the corpora, and
 commit the lock and `internal/upstreamlock/generated.go` together.
+
+The nw3 corpus (`testdata/vectors/nw3`) is exported from the pinned Nowhere
+commit's `src/tests/protocol/vectors.json` plus Morph KDF vectors; refresh it
+alongside the nw3 lock. Do not maintain wire hex tables by hand.
 
 ## Documentation and public API
 
