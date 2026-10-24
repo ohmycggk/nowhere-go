@@ -27,7 +27,7 @@ func TestTCPRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := WrapTCPServer(serverSide, keys)
-	payload := []byte("tls-record-bytes")
+	payload := minimalClientHello()
 	errCh := make(chan error, 1)
 	go func() {
 		buf := make([]byte, len(payload))
@@ -167,7 +167,7 @@ func TestFadeCoversBoundaryPairs(t *testing.T) {
 
 func TestServerAcceptsEveryPreludePolicy(t *testing.T) {
 	keys := Derive([]byte("0123456789abcdef0123456789abcdef"))
-	payload := []byte("tls-record-bytes")
+	payload := minimalClientHello()
 	for _, policy := range []preludePolicy{preludeFade, preludeFull8, preludeLow7} {
 		clientSide, serverSide := net.Pipe()
 		client, err := wrapTCPClientPolicy(clientSide, keys, policy)

@@ -60,6 +60,9 @@ Portal keys of 32-64 lowercase hex, and free-form Vector keys.
 
 Environment:
   NOW_MORPH_TCP_PRELUDE          nw3 TCP Morph prelude: fade (default), full8, or low7.
+                                 A 3.1 Portal accepts an authenticated prelude and,
+                                 for this release, still accepts a tag mismatch on
+                                 the 3.0 path. Peers do not negotiate the policy.
                                  nw2 stays full8 (default) or low7 and rejects fade.
 
 The TUI and status observer are not included in this Go binary.

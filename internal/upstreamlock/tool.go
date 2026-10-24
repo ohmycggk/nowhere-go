@@ -1,9 +1,9 @@
 //go:build ignore
 
-// Command upstream-lock regenerates UPSTREAM-nw2.lock and the generated constants
-// in internal/upstreamlock from a local Nowhere 2 checkout. It is not built as
-// part of the module; drive it through scripts/generate-upstream-lock.sh.
-// UPSTREAM.lock is the Nowhere 3 pin and is not rewritten here.
+// Command upstream-lock regenerates one upstream lock from a local Nowhere
+// checkout. -lock UPSTREAM-nw2.lock also rewrites internal/upstreamlock/generated.go.
+// -lock UPSTREAM.lock rewrites only the Nowhere 3 pin. It is not part of the
+// module build; scripts/generate-upstream-lock.sh regenerates both locks.
 
 package main
 

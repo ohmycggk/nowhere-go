@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** The default CLI URL is Nowhere 3 (`nw3` only). Nowhere 2 stays available when the URL uses `up`, `down`, `mux`, `next`, or `socks`, and that process speaks `nw2` only. The two versions do not handshake. Optional nw2 `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract is incompatible with Nowhere 2.0.x peers. nw3 Morph defaults on and uses a different key schedule (`nowhere/nw3/morph`). Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker on nw2 only; nw3 has no Mux.
+> **Compatibility:** The pinned nw3 baseline is Nowhere 3.1. A 3.1 Vector authenticates its Morph TCP prelude with one lazy identity and counter shared by that Vector. A 3.1 Portal accepts a fresh counter after the tag matches, and still accepts a 3.0.0 or 3.0.1 prelude when the tag does not match. That mismatch path does not consult the replay registry; it is transitional and a later version may remove it. A 3.0.x Portal ignores prelude content, so no URL, Shared Key, or ALPN migration is required. QUIC, `morph=0`, and the nw2 stack are unchanged. Replay is not mandatory while the mismatch fallback remains, and it is not durable across Portal restarts. The default CLI URL is Nowhere 3 (`nw3` only). Nowhere 2 stays available when the URL uses `up`, `down`, `mux`, `next`, or `socks`, and that process speaks `nw2` only. The two versions do not handshake. Optional nw2 `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract is incompatible with Nowhere 2.0.x peers. nw3 Morph defaults on and uses a different key schedule (`nowhere/nw3/morph`). Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker on nw2 only; nw3 has no Mux.
 
 ---
 
@@ -50,7 +50,7 @@ nowhere-go/
 │   └── diagnostic/
 ├── testdata/vectors/           # nw2 conformance corpus
 ├── cmd/nowhere/                # one binary; URL selects nw3 or nw2
-└── cmd/nowhere-check/          # nw2 vector self-check
+└── cmd/nowhere-check/          # nw2 and nw3 vector self-check
 ```
 
 Prefer importing subpackages. The sections below document the nw2 library, now imported from `nw2/`.

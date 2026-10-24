@@ -18,7 +18,9 @@ import (
 // files below define every byte on the wire (frame and header layout, auth,
 // morph transform) and nothing else, so the hash changes exactly when the wire
 // contract does. nw3 has no Mux, so its coverage set is the same minus
-// src/mux/wire.rs; see ProtocolHashNW3.
+// src/mux/wire.rs. Nowhere 3.1 also pins the authenticated-prelude admission
+// sources src/portal/replay.rs and src/portal/prehello.rs; the prelude codec
+// itself is already covered under src/transport/morph/. See ProtocolHashNW3.
 func protocolFiles(upstream string, nw3 bool) ([]string, error) {
 	var names []string
 	err := filepath.WalkDir(filepath.Join(upstream, "src"), func(path string, entry fs.DirEntry, err error) error {
@@ -37,6 +39,7 @@ func protocolFiles(upstream string, nw3 bool) ([]string, error) {
 		case strings.HasPrefix(rel, "src/protocol/"):
 		case !nw3 && rel == "src/mux/wire.rs":
 		case rel == "src/transport/morph.rs" || strings.HasPrefix(rel, "src/transport/morph/"):
+		case nw3 && (rel == "src/portal/replay.rs" || rel == "src/portal/prehello.rs"):
 		default:
 			return nil
 		}
@@ -68,7 +71,8 @@ func ProtocolHash(upstream string) (string, error) {
 }
 
 // ProtocolHashNW3 computes protocol_sha256 for the nw3 wire contract: the same
-// wire-defining sources minus src/mux/wire.rs, which nw3 does not have.
+// wire-defining sources minus src/mux/wire.rs, plus the authenticated TCP prelude
+// admission sources src/portal/replay.rs and src/portal/prehello.rs.
 func ProtocolHashNW3(upstream string) (string, error) {
 	names, err := protocolFiles(upstream, true)
 	if err != nil {

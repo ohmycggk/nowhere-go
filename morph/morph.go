@@ -1,6 +1,14 @@
 // Package morph is the Nowhere 3 keyed transform below TLS and QUIC.
 // Key derivation uses HMAC with the root label "nowhere/nw3/morph". It does
 // not call the Nowhere 2 Morph KDF.
+//
+// A Morph TCP connection starts with a 64-byte prelude and a 12-byte nonce.
+// Since Nowhere 3.1 the prelude can authenticate a Vector identity and counter.
+// A matching tag is checked against the Portal's in-process replay window
+// before TLS continues. A tag mismatch keeps the Nowhere 3.0 path: the prelude
+// is not authenticated and the replay registry is not consulted. That fallback
+// is transitional and may be removed by a later Nowhere version. QUIC and
+// non-Morph TCP do not use this prelude.
 package morph
 
 import (
@@ -26,11 +34,16 @@ const (
 )
 
 // Keys are the directional Morph outputs for one shared key.
+//
+// Copies made from the same Derive call share one Vector prelude identity and
+// one Portal replay registry. Keys constructed field by field have neither and
+// cannot send or accept an authenticated Morph TCP prelude.
 type Keys struct {
 	TCPC2S [32]byte
 	TCPS2C [32]byte
 	UDPC2S [32]byte
 	UDPS2C [32]byte
+	state  *preludeState
 }
 
 // Derive builds Morph keys. sharedKey is the same raw text used for authentication.
@@ -41,6 +54,7 @@ func Derive(sharedKey []byte) Keys {
 		TCPS2C: expand(root, "tcp s2c"),
 		UDPC2S: expand(root, "udp c2s"),
 		UDPS2C: expand(root, "udp s2c"),
+		state:  newPreludeState(root),
 	}
 }
 
@@ -86,10 +100,7 @@ func preludePolicyFromEnv() (preludePolicy, error) {
 }
 
 func generatePrelude(policy preludePolicy) ([preludeLen]byte, error) {
-	return generatePreludeWith(policy, func(dst []byte) error {
-		_, err := io.ReadFull(rand.Reader, dst)
-		return err
-	})
+	return generatePreludeWith(policy, readEntropy)
 }
 
 func generatePreludeWith(policy preludePolicy, fill func([]byte) error) ([preludeLen]byte, error) {
@@ -152,8 +163,18 @@ func sampleBelow(b byte, upper byte, fill func([]byte) error) (byte, error) {
 	return b % upper, nil
 }
 
-// WrapTCPClient writes the 64-byte prelude and 12-byte nonce, then masks TLS bytes.
+// WrapTCPClient allocates this Vector's next prelude counter, writes the
+// authenticated 64-byte prelude and 12-byte nonce, then masks TLS bytes.
+// The counter is consumed even when prelude generation later fails. QUIC and
+// packet Morph never call this and therefore allocate nothing.
 func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
+	if keys.state == nil {
+		return nil, errPreludeState
+	}
+	identity, counter, err := keys.state.allocate()
+	if err != nil {
+		return nil, err
+	}
 	policy, err := preludePolicyFromEnv()
 	if err != nil {
 		return nil, err
@@ -163,9 +184,10 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 		return nil, err
 	}
 	var nonce [nonceLen]byte
-	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
+	if err := readEntropy(nonce[:]); err != nil {
 		return nil, err
 	}
+	encodePrelude(keys.state, &prelude, &nonce, identity, counter)
 	pref := make([]byte, 0, preludeLen+nonceLen)
 	pref = append(pref, prelude[:]...)
 	pref = append(pref, nonce[:]...)
@@ -178,14 +200,17 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 	}, nil
 }
 
-// WrapTCPServer consumes the client prelude and nonce without interpreting the prelude.
+// WrapTCPServer accepts one Morph TCP connection. The first read checks an
+// authenticated prelude when its tag matches, then requires one complete
+// ClientHello before any byte is exposed to TLS. A tag mismatch skips the
+// replay registry and continues on the Nowhere 3.0 path.
 func WrapTCPServer(conn net.Conn, keys Keys) net.Conn {
 	return &tcpConn{
-		Conn:        conn,
-		readKey:     keys.TCPC2S,
-		writeKey:    keys.TCPS2C,
-		readDiscard: preludeLen,
-		readNeed:    nonceLen,
+		Conn:     conn,
+		readKey:  keys.TCPC2S,
+		writeKey: keys.TCPS2C,
+		server:   true,
+		state:    keys.state,
 	}
 }
 
@@ -195,28 +220,26 @@ type tcpConn struct {
 	nonce             [nonceLen]byte
 	readOff, writeOff uint64
 	writePref         []byte
-	readDiscard       int
-	readNeed          int
+	server            bool
+	state             *preludeState
+	pending           []byte
+	bootstrapped      bool
+	bootErr           error
 	readMu, writeMu   sync.Mutex
 }
 
 func (c *tcpConn) Read(p []byte) (int, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-	if c.readDiscard > 0 {
-		scratch := make([]byte, c.readDiscard)
-		if _, err := io.ReadFull(c.Conn, scratch); err != nil {
+	if c.server {
+		if err := c.bootstrap(); err != nil {
 			return 0, err
 		}
-		c.readDiscard = 0
-	}
-	if c.readNeed > 0 {
-		buf := make([]byte, c.readNeed)
-		if _, err := io.ReadFull(c.Conn, buf); err != nil {
-			return 0, err
+		if len(c.pending) > 0 {
+			n := copy(p, c.pending)
+			c.pending = c.pending[n:]
+			return n, nil
 		}
-		copy(c.nonce[nonceLen-c.readNeed:], buf)
-		c.readNeed = 0
 	}
 	if len(p) == 0 {
 		return 0, nil
@@ -230,6 +253,53 @@ func (c *tcpConn) Read(p []byte) (int, error) {
 		c.readOff += uint64(n)
 	}
 	return n, err
+}
+
+func (c *tcpConn) bootstrap() error {
+	if c.bootErr != nil {
+		return c.bootErr
+	}
+	if c.bootstrapped {
+		return nil
+	}
+	if err := c.bootstrapOnce(); err != nil {
+		c.bootErr = err
+		return err
+	}
+	c.bootstrapped = true
+	return nil
+}
+
+func (c *tcpConn) bootstrapOnce() error {
+	if c.state == nil {
+		return errPreludeState
+	}
+	if err := setLinger(c.Conn, 0); err != nil {
+		return err
+	}
+	var head [preludeLen + nonceLen]byte
+	if _, err := io.ReadFull(c.Conn, head[:]); err != nil {
+		return err
+	}
+	var prelude [preludeLen]byte
+	copy(prelude[:], head[:preludeLen])
+	copy(c.nonce[:], head[preludeLen:])
+	identity, counter, matched := decodePrelude(c.state, &prelude, &c.nonce)
+	if matched && (!counterValid(counter) || !c.state.registry().precheck(identity, counter)) {
+		return errPreludeRejected
+	}
+	pending, err := c.readClientHello()
+	if err != nil {
+		return err
+	}
+	if matched && !c.state.registry().commit(identity, counter) {
+		return errPreludeRejected
+	}
+	if err := setLinger(c.Conn, -1); err != nil {
+		return err
+	}
+	c.pending = pending
+	return nil
 }
 
 func (c *tcpConn) Write(p []byte) (int, error) {

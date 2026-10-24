@@ -1,7 +1,7 @@
 {
   "protocol": "nw3",
-  "upstream_version": "3.0.1",
-  "upstream_commit": "00000e06554e3f8119dace184967bee46138209f",
+  "upstream_version": "3.1.0",
+  "upstream_commit": "000006531ca60321a02b50d270ab2e22f37701e3",
   "exporter_version": "nowhere-vector-export/5",
   "notes": [
     "upstream Nowhere ships no fixed Morph vectors; these are derived from the wire contract in Nowhere/src/transport/morph.rs (MORPH_ROOT_SALT + HMAC-SHA256 expand with a 0x01 info terminator)",

@@ -7,6 +7,7 @@ package veccheck
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -82,6 +83,7 @@ func CheckNW3Dir(dir string) (int, error) {
 	}{
 		{"vectors.json", checkNW3Vectors},
 		{"morph.json", checkNW3Morph},
+		{"prelude.json", checkNW3Prelude},
 	} {
 		count, err := c.fn(filepath.Join(dir, c.name))
 		if err != nil {
@@ -312,4 +314,80 @@ func parseNW3Role(name string) (wire.Role, error) {
 	default:
 		return 0, fmt.Errorf("unknown role %q", name)
 	}
+}
+
+type nw3PreludeFile struct {
+	Protocol string          `json:"protocol"`
+	Cases    []nw3PreludeRow `json:"cases"`
+}
+
+type nw3PreludeRow struct {
+	ID          string `json:"id"`
+	SharedKey   string `json:"shared_key_text"`
+	PrefixHex   string `json:"prefix_hex"`
+	NonceHex    string `json:"nonce_hex"`
+	HighHex     string `json:"high_hex"`
+	IdentityHex string `json:"identity_hex"`
+	CounterHex  string `json:"counter_hex"`
+	TailHex     string `json:"tail_hex"`
+}
+
+func checkNW3Prelude(path string) (int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var f nw3PreludeFile
+	if err := unmarshal(raw, path, &f); err != nil {
+		return 0, err
+	}
+	if f.Protocol != "nw3" {
+		return 0, fmt.Errorf("%s: protocol %q, want nw3", path, f.Protocol)
+	}
+	for _, tc := range f.Cases {
+		keys := morph.Derive([]byte(tc.SharedKey))
+		prefix, err := vectors.DecodeHex(tc.PrefixHex)
+		if err != nil || len(prefix) != 32 {
+			return 0, fmt.Errorf("%s: %s prefix", path, tc.ID)
+		}
+		nonce, err := vectors.DecodeHex(tc.NonceHex)
+		if err != nil || len(nonce) != 12 {
+			return 0, fmt.Errorf("%s: %s nonce", path, tc.ID)
+		}
+		high, err := vectors.DecodeHex(tc.HighHex)
+		if err != nil || len(high) != 4 {
+			return 0, fmt.Errorf("%s: %s high", path, tc.ID)
+		}
+		identityRaw, err := vectors.DecodeHex(tc.IdentityHex)
+		if err != nil || len(identityRaw) != 8 {
+			return 0, fmt.Errorf("%s: %s identity", path, tc.ID)
+		}
+		counterRaw, err := vectors.DecodeHex(tc.CounterHex)
+		if err != nil || len(counterRaw) != 6 {
+			return 0, fmt.Errorf("%s: %s counter", path, tc.ID)
+		}
+		var identityBuf, counterBuf [8]byte
+		copy(identityBuf[:], identityRaw)
+		copy(counterBuf[2:], counterRaw)
+		identity := binary.BigEndian.Uint64(identityBuf[:])
+		counter := binary.BigEndian.Uint64(counterBuf[:])
+		prelude := make([]byte, 64)
+		copy(prelude, prefix)
+		for i := 0; i < 32; i++ {
+			bit := (high[i/8] >> (7 - i%8)) & 1
+			prelude[32+i] = bit << 7
+		}
+		if err := morph.EncodeTCPPrelude(keys, prelude, nonce, identity, counter); err != nil {
+			return 0, fmt.Errorf("%s: %s encode: %w", path, tc.ID, err)
+		}
+		wantTail, err := vectors.DecodeHex(tc.TailHex)
+		if err != nil || !bytes.Equal(prelude[32:], wantTail) {
+			return 0, fmt.Errorf("%s: %s tail\n got %x\nwant %x", path, tc.ID, prelude[32:], wantTail)
+		}
+		gotID, gotCounter, ok := morph.DecodeTCPPrelude(keys, prelude, nonce)
+		if !ok || gotID != identity || gotCounter != counter {
+			return 0, fmt.Errorf("%s: %s decode id=%x counter=%d ok=%v", path, tc.ID, gotID, gotCounter, ok)
+		}
+	}
+	return len(f.Cases), nil
 }

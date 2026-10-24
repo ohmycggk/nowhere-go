@@ -8,7 +8,55 @@ release.
 A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
 and all clients.
 
+## v3.1.0 - 2026-10-24
+
+### Added
+
+- Protocol baseline is Nowhere 3.1.0 (`000006531ca60321a02b50d270ab2e22f37701e3`).
+  Morph TCP now carries an authenticated prelude. Each Vector lazily generates
+  one random 64-bit identity and spends a shared 48-bit counter, starting at 1,
+  on every Morph TCP connection. Failed or cancelled handshakes consume the
+  counter. It never wraps; exhaustion rejects the next connection. QUIC and
+  `morph=0` do not allocate one.
+- A 3.1 Portal keeps an in-process replay registry: at most 16384 identities in
+  strict FIFO order and a 1024-counter window per identity. There is no TTL,
+  persistence, or separate nonce cache. A matching tag is prechecked, the
+  ClientHello is parsed, and the counter is committed only after that parse
+  succeeds and before any TLS response. Counter 0, a repeat, or a counter
+  outside the window is silently rejected and is not retried as a legacy
+  prelude.
+- `testdata/vectors/nw3/prelude.json` pins the upstream fixed authenticated
+  prelude vectors. `nowhere-check` verifies them. `UPSTREAM.lock` now covers
+  `src/portal/replay.rs` and `src/portal/prehello.rs` in addition to the Morph
+  sources.
+
+### Changed
+
+- A tag mismatch still uses the Nowhere 3.0 Morph TCP path and does not touch
+  the replay registry. This is an intentional transitional fallback: a 3.1
+  Vector can reach a 3.0.0 or 3.0.1 Portal, and a 3.0.x Vector can reach a 3.1
+  Portal. A later Nowhere version may remove the fallback. No service URL,
+  32-character Shared Key, ALPN `nw3`, or `NOW_MORPH_TCP_PRELUDE` migration is
+  required. The default prelude policy remains `fade`.
+- The CLI version is 3.1.0. Release builds that inject a `v` prefix no longer
+  print it twice.
+
+### Security
+
+- The authenticated tag covers the nonce, prelude prefix, preserved high bits,
+  identity, and counter. It does not bind the full ClientHello or the later TLS
+  stream. Changing a captured prelude so its tag no longer matches bypasses the
+  registry through the legacy path, so this release does not enforce replay
+  protection on every Morph TCP connection. A leaked Shared Key also exposes
+  historical prelude metadata; there is no forward secrecy for that metadata.
+- Go's `crypto/tls` has no rustls `Acceptor`. Before any TLS byte is delivered,
+  the Portal buffers a structurally complete ClientHello and stays silent on
+  incomplete or malformed input. A structurally valid but semantically rejected
+  ClientHello can still produce a normal TLS alert after that point. That is a
+  known gap with Nowhere's Silent PreHello.
+
 ## v3.0.1 - 2026-10-22
+
 
 ### Changed
 

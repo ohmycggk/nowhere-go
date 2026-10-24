@@ -12,8 +12,9 @@ import (
 	"syscall"
 )
 
-// Version is overridden at link time: -ldflags "-X main.Version=v2.0.0"
-var Version = "dev"
+// Version is overridden at link time: -ldflags "-X main.Version=3.1.0".
+// A leading v from git describe is accepted and not doubled.
+var Version = "3.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -47,7 +48,11 @@ func run(args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: nowhere --version")
 		}
-		fmt.Printf("nowhere-v%s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+		version := Version
+		if len(version) > 0 && version[0] == 'v' {
+			version = version[1:]
+		}
+		fmt.Printf("nowhere-v%s %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
 		return nil
 	case "tui":
 		if len(args) != 1 {
