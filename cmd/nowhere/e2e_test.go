@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ohmycggk/nowhere-go/egress"
+	"github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/nw2/server"
 	"github.com/ohmycggk/nowhere-go/nw2/wire"
 	"github.com/ohmycggk/nowhere-go/portal"
@@ -44,6 +46,163 @@ func TestURLEdition(t *testing.T) {
 	}
 	if len(mustServerALPN(t, cfg)) != 1 || mustServerALPN(t, cfg)[0] != nw3wire.ALPN {
 		t.Fatal("nw3 portal would advertise more than nw3")
+	}
+}
+
+func TestMorphUDPDropsUnsupportedVersion(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	cert := testLeaf(t)
+	for _, morphing := range []bool{false, true} {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		packet := pc
+		if morphing {
+			packet = morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
+		}
+		ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv, err := portal.New(portal.Config{
+			SharedKey: key,
+			TLS:       &tls.Config{Certificates: []tls.Certificate{cert}},
+			Upstream:  portal.Direct{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { _ = srv.ServeQUIC(ctx, ln) }()
+
+		probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, 1200)
+		body[0] = 0xc0
+		body[1], body[2], body[3], body[4] = 0x0a, 0x1a, 0x2a, 0x3a
+		body[5] = 8
+		target := pc.LocalAddr().(*net.UDPAddr)
+		if morphing {
+			client := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			if _, err := client.WriteTo(body, target); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := probe.WriteTo(body, target); err != nil {
+			t.Fatal(err)
+		}
+		if morphing {
+			// One more copy, so a single delayed reply cannot be mistaken for a drop.
+			client := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			if _, err := client.WriteTo(body, target); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wait := 200 * time.Millisecond
+		if morphing {
+			wait = 500 * time.Millisecond
+		}
+		_ = probe.SetReadDeadline(time.Now().Add(wait))
+		buf := make([]byte, 1500)
+		n, err := probe.Read(buf)
+		if morphing {
+			if err == nil {
+				t.Fatalf("morph udp answered unsupported version with %d bytes", n)
+			}
+		} else if err != nil || n < 7 || buf[0]&0x80 == 0 || !bytes.Equal(buf[1:5], []byte{0, 0, 0, 0}) {
+			t.Fatalf("plain udp version negotiation: n=%d err=%v head=%x", n, err, buf[:min(n, 7)])
+		}
+		cancel()
+		_ = ln.Close()
+		_ = probe.Close()
+		_ = pc.Close()
+	}
+}
+
+func TestMorphQUICStillHandshakes(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	cert := testLeaf(t)
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	packet := morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
+	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv, err := portal.New(portal.Config{
+		SharedKey: key,
+		Morph:     true,
+		TLS:       &tls.Config{Certificates: []tls.Certificate{cert}},
+		Upstream:  portal.Direct{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ServeQUIC(ctx, ln) }()
+
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoLn.Close()
+	go func() {
+		c, err := echoLn.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = io.Copy(c, c)
+	}()
+
+	client, err := vector.New(vector.Config{
+		SharedKey: key,
+		Morph:     true,
+		DialQUIC: func(ctx context.Context) (qio.Conn, error) {
+			raw, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			wrapped := morph.WrapPacketConn(raw, morph.Derive([]byte(key)), true)
+			return dialNW3QUIC(ctx, wrapped, pc.LocalAddr().String(), &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "nowhere",
+				NextProtos:         []string{nw3wire.ALPN},
+			})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	flowCtx, cancelFlow := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFlow()
+	host, port, _ := net.SplitHostPort(echoLn.Addr().String())
+	target, err := nw3wire.NewIPTarget(netip.MustParseAddr(host), parsePort(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := client.OpenTCP(flowCtx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("morph")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "morph" {
+		t.Fatalf("got %q", buf)
 	}
 }
 

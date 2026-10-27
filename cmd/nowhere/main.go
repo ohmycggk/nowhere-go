@@ -12,9 +12,9 @@ import (
 	"syscall"
 )
 
-// Version is overridden at link time: -ldflags "-X main.Version=3.1.0".
+// Version is overridden at link time: -ldflags "-X main.Version=3.2.0".
 // A leading v from git describe is accepted and not doubled.
-var Version = "3.1.0"
+var Version = "3.2.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

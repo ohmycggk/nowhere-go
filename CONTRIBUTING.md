@@ -23,7 +23,7 @@ hashes:
 
 | Lock | Baseline | `protocol_sha256` coverage | `vector_tree_sha256` coverage |
 |---|---|---|---|
-| `UPSTREAM.lock` | Nowhere 3 (`nw3`) | `src/protocol/**`, `src/transport/morph.rs`, `src/transport/morph/**` | `testdata/vectors/nw3` |
+| `UPSTREAM.lock` | Nowhere 3 (`nw3`) | `src/protocol/**`, `src/transport/morph.rs`, `src/transport/morph/**`, `src/portal/replay.rs`, `src/portal/prehello.rs` | `testdata/vectors/nw3` |
 | `UPSTREAM-nw2.lock` | Nowhere 2 (`nw2`) | the above plus `src/mux/wire.rs` | `testdata/vectors`, excluding `nw3/` |
 
 `protocol_sha256` covers the wire-defining Rust sources and nothing else, so it

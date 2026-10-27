@@ -8,6 +8,55 @@ release.
 A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
 and all clients.
 
+## v3.2.0 - 2026-10-27
+
+### Changed
+
+- Protocol baseline is Nowhere 3.2.0 (`00000e23a0a131dd04fd7aec340b8d523a13ae51`).
+  This is a lockstep upgrade for Morph TCP. A 3.2 Portal requires an
+  authenticated prelude with a counter in `1..=2^48-1`. A tag mismatch, counter
+  0, a replay, or a counter outside the window is rejected before ClientHello
+  parsing and does not consult the replay registry. The Nowhere 3.0 fallback is
+  gone: a 3.0.x Vector, or any sender that omits prelude authentication, cannot
+  enter this Portal. An authenticated 3.1 Vector still can. A 3.2 Vector still
+  reaches a 3.0.x Portal, which ignores prelude contents. No service URL,
+  32-character Shared Key, ALPN `nw3`, or `NOW_MORPH_TCP_PRELUDE` migration is
+  required. The default prelude policy remains `fade`.
+- Replay is now checked on every Morph TCP connection that reaches ClientHello
+  parsing. The registry is still process memory only: at most 16384 identities
+  in strict FIFO order, a 1024-counter window, no TTL, and nothing survives a
+  Portal restart. The tag still does not cover the whole ClientHello.
+- Zero linger is set when a Morph TCP connection is accepted and stays set
+  through prelude validation, TLS, ALPN, and the AuthFrame. Normal linger is
+  restored only after a complete Vector AuthFrame, and only while the handshake
+  deadline captured at accept has not expired. Rejected prelude and ClientHello
+  input is not drained; the read stays parked until that deadline.
+- A Morph TCP connection waits for an unauthenticated-admission slot until the
+  handshake deadline instead of being closed immediately. Non-Morph TCP is still
+  closed when admission is full.
+- A Morph UDP server drops a long-header datagram whose version is not in the
+  quinn 0.11.19 set (`0x00000001` and drafts `0xff00001d` through `0xff000022`)
+  before the host QUIC stack can answer it. Short headers pass. Clients and
+  `morph=0` do not filter, so an unsupported version on plain UDP still receives
+  a Version Negotiation packet. QUIC v2 (`0x6b3343cf`) is not in that set.
+- The CLI version is 3.2.0.
+
+### Fixed
+
+- The Morph UDP version filter reads through the wrapped socket. It does not
+  open a loopback socket or a socket per source address. A rejected Morph TCP
+  handshake releases its unauthenticated-admission slot before it holds the
+  socket until the deadline, and a waiter cannot miss the release that frees
+  that slot.
+
+### Security
+
+- Replay protection now applies to every Morph TCP connection that presents a
+  matching tag. Changing a captured prelude so its tag no longer matches does
+  not bypass the registry; that connection is rejected. A leaked Shared Key
+  still exposes historical prelude metadata. There is no forward secrecy for
+  that metadata, and FIFO eviction or a restart still discards history.
+
 ## v3.1.0 - 2026-10-24
 
 ### Added
