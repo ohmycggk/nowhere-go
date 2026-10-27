@@ -250,7 +250,6 @@ type tcpConn struct {
 	writePref         []byte
 	server            bool
 	state             *preludeState
-	createdAt         time.Time
 	pending           []byte
 	bootstrapped      bool
 	bootErr           error
