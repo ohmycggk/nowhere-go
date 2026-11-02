@@ -37,6 +37,12 @@ type Conn interface {
 	RemoteAddr() net.Addr
 }
 
+// PreAuth is implemented by a Portal QUIC connection that starts with a small
+// receive window. Release lets the window grow after AuthFrame succeeds.
+type PreAuth interface {
+	ReleasePreAuth()
+}
+
 // Listener accepts QUIC connections.
 type Listener interface {
 	Accept(ctx context.Context) (Conn, error)

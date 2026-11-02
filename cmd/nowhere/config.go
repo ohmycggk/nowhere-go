@@ -209,13 +209,8 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 			cfg.socks, cfg.socksUser, cfg.socksPass = addr, user, pass
 		}
 	}
-	if cfg.kind == nw3Portal && cfg.exit == nw3ExitEgress {
-		if !cfg.endpoint.hasUDP() {
-			return nw3Config{}, fmt.Errorf("out=egress requires a QUIC listener")
-		}
-		if cfg.dial.configured() {
-			return nw3Config{}, fmt.Errorf("out=egress conflicts with dial, dial4, or dial6")
-		}
+	if cfg.kind == nw3Portal && cfg.exit == nw3ExitEgress && cfg.dial.configured() {
+		return nw3Config{}, fmt.Errorf("out=egress conflicts with dial, dial4, or dial6")
 	}
 	if cfg.kind == nw3Vector && vectorRequiresIn && cfg.inAddr == "" {
 		return nw3Config{}, fmt.Errorf("vector requires in=<listen-endpoint>")
@@ -236,11 +231,11 @@ func normalizeNW3Endpoint(cfg *nw3Config) error {
 			return fmt.Errorf("vector endpoint declares exactly one carrier")
 		}
 	case nw3Egress:
-		if cfg.endpoint.hasTCP() && cfg.endpoint.hasUDP() && cfg.endpoint.tcp.port == cfg.endpoint.udp.port {
+		if cfg.endpoint.hasTCP() && cfg.endpoint.hasUDP() && cfg.endpoint.tcp.port == cfg.endpoint.udp.port && cfg.endpoint.tcp.family == cfg.endpoint.udp.family {
 			cfg.endpoint.tcp = nil
 		}
-		if cfg.endpoint.hasTCP() || !cfg.endpoint.hasUDP() {
-			return fmt.Errorf("egress endpoint declares exactly one QUIC carrier")
+		if cfg.endpoint.hasTCP() == cfg.endpoint.hasUDP() {
+			return fmt.Errorf("egress endpoint declares exactly one carrier")
 		}
 	default:
 		if !cfg.endpoint.hasTCP() && !cfg.endpoint.hasUDP() {

@@ -6,8 +6,8 @@ This is a library, not a standalone proxy. Hosts such as [sing-box](https://gith
 
 Protocol behavior follows the official Rust project:
 
-- Spec: [protocol.md](https://github.com/NodePassProject/Nowhere/blob/main/docs/protocol.md)
-- Integration notes: [integrations.md](https://github.com/NodePassProject/Nowhere/blob/main/docs/integrations.md)
+- Core: [Nowhere Protocol](https://github.com/NodePassProject/Nowhere-Protocol/blob/main/PROTOCOL.md)
+- Extensions: [Prelude](https://github.com/NodePassProject/Nowhere/blob/v3.3.0/docs/prelude.md) and [Egress](https://github.com/NodePassProject/Nowhere/blob/v3.3.0/docs/egress.md)
 
 ```text
 module github.com/ohmycggk/nowhere-go
@@ -19,7 +19,7 @@ License: **GPL-3.0** (same family as upstream Nowhere).
 Project policies: [changelog](CHANGELOG.md) · [contributing](CONTRIBUTING.md) ·
 [security](SECURITY.md)
 
-> **Compatibility:** The pinned nw3 baseline is Nowhere 3.2. A 3.2 Vector authenticates its Morph TCP prelude with one lazy identity and counter shared by that Vector. A 3.2 Portal requires that authentication: a tag mismatch, counter 0, a replay, or a counter outside the window is rejected before ClientHello parsing. There is no 3.0 fallback, so a 3.0.x Vector cannot enter a 3.2 Portal. A 3.0.x Portal ignores prelude content, so a 3.2 Vector can still reach it. No URL, Shared Key, or ALPN migration is required. Replay is in-memory, FIFO-bounded, and lost on restart. Morph UDP on the server drops QUIC long headers whose version quinn 0.11.19 does not support; `morph=0` and clients do not. The nw2 stack is unchanged. The default CLI URL is Nowhere 3 (`nw3` only). Nowhere 2 stays available when the URL uses `up`, `down`, `mux`, `next`, or `socks`, and that process speaks `nw2` only. The two versions do not handshake. Optional nw2 `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract is incompatible with Nowhere 2.0.x peers. nw3 Morph defaults on and uses a different key schedule (`nowhere/nw3/morph`). Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker on nw2 only; nw3 has no Mux.
+> **Compatibility:** The pinned nw3 baseline is Nowhere 3.3. NW3 Core framing is unchanged. Morph TCP, Morph UDP Prelude, and Egress are Nowhere extensions that supersede the corresponding Core text: a peer that implements PROTOCOL.md literally, with an unauthenticated random prelude, cannot complete a Morph TCP handshake with this Portal. A Portal requires an authenticated Morph TCP prelude: a tag mismatch, counter 0, a replay, or a counter outside the window is rejected before ClientHello parsing. There is no 3.0 fallback. Morph-enabled QUIC clients send one independent 12-byte UDP Prelude per socket before the first QUIC datagram; receivers discard datagrams of 12 bytes or fewer and do not require the Prelude to arrive. Egress registers over TLS or QUIC. One Portal FIFO shares every registration: a claimed QUIC connection returns to the tail, and a claimed TLS connection carries one flow and leaves. No URL, Shared Key, or ALPN migration is required. Replay is in-memory, FIFO-bounded, and lost on restart. Morph UDP on the server drops QUIC long headers whose version quinn 0.11.19 does not support; `morph=0` and clients do not. The nw2 stack is unchanged. The default CLI URL is Nowhere 3 (`nw3` only). Nowhere 2 stays available when the URL uses `up`, `down`, `mux`, `next`, or `socks`, and that process speaks `nw2` only. The two versions do not handshake. Optional nw2 `morph=1` sits below TLS/QUIC with no negotiation; the 2.1 Morph wire contract is incompatible with Nowhere 2.0.x peers. nw3 Morph defaults on and uses a different key schedule (`nowhere/nw3/morph`). Dedicated `mux=0` and marked Mux still share one TLS listener via the `0xff` marker on nw2 only; nw3 has no Mux.
 
 ---
 

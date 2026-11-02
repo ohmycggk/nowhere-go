@@ -3,20 +3,41 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/ohmycggk/nowhere-go/qio"
+	"github.com/ohmycggk/nowhere-go/runtime"
 	"github.com/ohmycggk/nowhere-go/wire"
 	"github.com/quic-go/quic-go"
 )
 
-func nw3QuicConfig() *quic.Config {
-	return &quic.Config{
-		EnableDatagrams: true,
-		MaxIdleTimeout:  120 * time.Second,
-		Allow0RTT:       false,
+func nw3QuicConfig(idle time.Duration, profile runtime.Profile, opened *atomic.Bool) *quic.Config {
+	if idle <= 0 {
+		idle = runtime.DefaultUDPIdleTimeout
 	}
+	connWindow := profile.Connection
+	if opened != nil {
+		connWindow = runtime.PreAuthConnWindow
+	}
+	cfg := &quic.Config{
+		EnableDatagrams:                true,
+		MaxIdleTimeout:                 idle,
+		KeepAlivePeriod:                idle / 2,
+		Allow0RTT:                      false,
+		InitialStreamReceiveWindow:     profile.Stream,
+		MaxStreamReceiveWindow:         profile.Stream,
+		InitialConnectionReceiveWindow: connWindow,
+		MaxConnectionReceiveWindow:     profile.Connection,
+	}
+	if opened != nil {
+		cfg.AllowConnectionWindowIncrease = func(*quic.Conn, uint64) bool {
+			return opened.Load()
+		}
+	}
+	return cfg
 }
 
 func nw3ServerTLS(base *tls.Config) *tls.Config {
@@ -28,14 +49,18 @@ func nw3ServerTLS(base *tls.Config) *tls.Config {
 	return cfg
 }
 
-type nw3Listener struct{ ln *quic.Listener }
+type nw3Listener struct {
+	ln     *quic.Listener
+	opened *atomic.Bool
+}
 
-func listenNW3QUIC(pc net.PacketConn, tlsCfg *tls.Config) (*nw3Listener, error) {
-	ln, err := quic.Listen(pc, nw3ServerTLS(tlsCfg), nw3QuicConfig())
+func listenNW3QUIC(pc net.PacketConn, tlsCfg *tls.Config, idle time.Duration, profile runtime.Profile) (*nw3Listener, error) {
+	opened := &atomic.Bool{}
+	ln, err := quic.Listen(pc, nw3ServerTLS(tlsCfg), nw3QuicConfig(idle, profile, opened))
 	if err != nil {
 		return nil, err
 	}
-	return &nw3Listener{ln: ln}, nil
+	return &nw3Listener{ln: ln, opened: opened}, nil
 }
 
 func (l *nw3Listener) Accept(ctx context.Context) (qio.Conn, error) {
@@ -43,12 +68,12 @@ func (l *nw3Listener) Accept(ctx context.Context) (qio.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &nw3Conn{c: c}, nil
+	return &nw3Conn{c: c, opened: l.opened}, nil
 }
 
 func (l *nw3Listener) Close() error { return l.ln.Close() }
 
-func dialNW3QUIC(ctx context.Context, pc net.PacketConn, addr string, tlsCfg *tls.Config) (qio.Conn, error) {
+func dialNW3QUIC(ctx context.Context, pc net.PacketConn, addr string, tlsCfg *tls.Config, idle time.Duration, profile runtime.Profile) (qio.Conn, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
@@ -58,14 +83,25 @@ func dialNW3QUIC(ctx context.Context, pc net.PacketConn, addr string, tlsCfg *tl
 	cfg.MaxVersion = tls.VersionTLS13
 	cfg.NextProtos = []string{wire.ALPN}
 	cfg.ClientSessionCache = nil
-	c, err := quic.Dial(ctx, pc, udpAddr, cfg, nw3QuicConfig())
+	c, err := quic.Dial(ctx, pc, udpAddr, cfg, nw3QuicConfig(idle, profile, nil))
 	if err != nil {
 		return nil, err
 	}
 	return &nw3Conn{c: c}, nil
 }
 
-type nw3Conn struct{ c *quic.Conn }
+type nw3Conn struct {
+	c       *quic.Conn
+	opened  *atomic.Bool
+	maxData atomic.Int64
+}
+
+// ReleasePreAuth lets the Portal connection window grow after AuthFrame.
+func (c *nw3Conn) ReleasePreAuth() {
+	if c.opened != nil {
+		c.opened.Store(true)
+	}
+}
 
 func (c *nw3Conn) TLSVersion() uint16 { return c.c.ConnectionState().TLS.Version }
 func (c *nw3Conn) ALPN() string       { return c.c.ConnectionState().TLS.NegotiatedProtocol }
@@ -90,8 +126,20 @@ func (c *nw3Conn) OpenStream(ctx context.Context) (qio.Stream, error) {
 func (c *nw3Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return c.c.ReceiveDatagram(ctx)
 }
-func (c *nw3Conn) SendDatagram(b []byte) error { return c.c.SendDatagram(b) }
-func (c *nw3Conn) MaxDatagramSize() int        { return 1200 }
+func (c *nw3Conn) SendDatagram(b []byte) error {
+	err := c.c.SendDatagram(b)
+	var tooLarge *quic.DatagramTooLargeError
+	if errors.As(err, &tooLarge) && tooLarge.MaxDatagramPayloadSize > 0 {
+		c.maxData.Store(tooLarge.MaxDatagramPayloadSize)
+	}
+	return err
+}
+func (c *nw3Conn) MaxDatagramSize() int {
+	if n := c.maxData.Load(); n > 0 {
+		return int(n)
+	}
+	return 1200
+}
 func (c *nw3Conn) CloseWithError(code uint64, message string) error {
 	return c.c.CloseWithError(quic.ApplicationErrorCode(code), message)
 }

@@ -88,18 +88,12 @@ func TestVectors(t *testing.T) {
 			t.Fatalf("%s/%d frame %x", row.Role, row.Transport, frame)
 		}
 		got, err := ValidateAuthFrame(frame[:], creds, AuthTransport(row.Transport), exporter)
-		if role == RoleEgress && AuthTransport(row.Transport) == AuthTLS {
-			if err == nil {
-				t.Fatal("egress tag must be rejected on TLS")
-			}
-			continue
-		}
 		if err != nil || got != role {
 			t.Fatalf("validate %s/%d: %v %v", row.Role, row.Transport, got, err)
 		}
 	}
-	if _, err := ValidateAuthFrame(mustHex(t, doc.Auth[2].Frame), creds, AuthTLS, exporter); err == nil {
-		t.Fatal("egress tag must be rejected on TLS")
+	if got, err := ValidateAuthFrame(mustHex(t, doc.Auth[2].Frame), creds, AuthTLS, exporter); err != nil || got != RoleEgress {
+		t.Fatalf("egress tag on TLS: %v %v", got, err)
 	}
 	tcp, err := ParseFlowStart(mustHex(t, doc.FlowStart.TCP)[0])
 	if err != nil || tcp != FlowTCP {

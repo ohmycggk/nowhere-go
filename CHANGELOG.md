@@ -8,6 +8,42 @@ release.
 A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
 and all clients.
 
+## v3.3.0 - 2026-10-31
+
+### Changed
+
+- Protocol baseline is Nowhere 3.3.0 (`000007b2482b8acf3a609888921fd847cad56c33`).
+  NW3 Core framing, ALPN `nw3`, AuthFrame, FlowStart, and SetupResult are
+  unchanged. No service URL or Shared Key migration is required.
+- Egress registers over TLS or QUIC. Portal keeps one FIFO across both.
+  Claiming a QUIC connection returns it to the tail. Claiming a TLS connection
+  removes it and that connection carries one flow. An empty FIFO waits inside
+  `NOW_FLOW_SETUP_TIMEOUT` instead of failing immediately. After a connection
+  is selected, setup failure does not try another Egress.
+- TLS Egress keeps a standby pool. It starts with one seed and adds up to two
+  connections after FlowStart, bounded by `NOW_EGRESS_TLS_POOL_MAX` (default
+  128). Portal pending TLS registrations are bounded by
+  `NOW_PORTAL_TLS_IDLE_MAX` (default 128, maximum 1023). Unused standby
+  expires after 120 seconds. Kernel keepalive uses a 15-second idle and a
+  15-second probe interval.
+- Morph-enabled QUIC clients send one independent 12-byte UDP Prelude on each
+  socket before the first QUIC datagram. `NOW_MORPH_UDP_PRELUDE` selects
+  `fade` (default), `full8`, or `low7`. Receivers discard datagrams of 12
+  bytes or fewer and do not require a Prelude.
+- When `NOW_HANDSHAKE_TIMEOUT` is unset, the timeout is
+  HMAC-SHA256(SharedKey, `nowhere/handshake-timeout`), then
+  `(3000 + 100 * (value % 271))` milliseconds. The key
+  `0123456789abcdef0123456789abcdef` derives 9100ms. An explicit duration
+  overrides it and may fall outside 3–30 seconds.
+- The CLI version is 3.3.0.
+
+### Unchanged hashes
+
+`UPSTREAM.lock` records the 3.3.0 commit. `protocol_sha256` and
+`vector_tree_sha256` still describe the 3.2 corpus until a Nowhere 3.3
+checkout is available to regenerate them. NW3 Core vectors did not change
+in this release.
+
 ## v3.2.0 - 2026-10-27
 
 ### Changed

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohmycggk/nowhere-go/egress"
 	"github.com/ohmycggk/nowhere-go/vector"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
@@ -112,6 +113,97 @@ func TestTLSEcho(t *testing.T) {
 				t.Fatalf("udp %q", ubuf[:n])
 			}
 		})
+	}
+}
+
+func TestTLSEgressEcho(t *testing.T) {
+	echo := echoServer(t)
+	cert := testCert(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	key := "0123456789abcdef0123456789abcdef"
+	srv, err := New(Config{
+		SharedKey: key,
+		Egress:    true,
+		TLS:       &tls.Config{Certificates: []tls.Certificate{cert}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	egCtx, egCancel := context.WithCancel(context.Background())
+	defer egCancel()
+	egErr := make(chan error, 1)
+	go func() {
+		egErr <- egress.Run(egCtx, egress.Config{
+			SharedKey:  key,
+			PortalAddr: ln.Addr().String(),
+			TLS: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "nowhere",
+			},
+			DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "tcp", addr)
+			},
+			Upstream: Direct{},
+		})
+	}()
+
+	client, err := vector.New(vector.Config{
+		SharedKey:  key,
+		PortalAddr: ln.Addr().String(),
+		TLS: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         "nowhere",
+		},
+		DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", addr)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, _ := net.SplitHostPort(echo)
+	target, err := wire.NewIPTarget(netip.MustParseAddr(host), mustPort(t, port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conn net.Conn
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err = client.OpenTCP(context.Background(), target)
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		select {
+		case e := <-egErr:
+			t.Fatalf("open: %v; egress: %v", err, e)
+		default:
+			t.Fatal(err)
+		}
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "ping" {
+		t.Fatalf("got %q", buf)
 	}
 }
 

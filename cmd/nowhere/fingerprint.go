@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohmycggk/nowhere-go/runtime"
+
 	nw3morph "github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/nw2/carrier/morph"
 	"github.com/ohmycggk/nowhere-go/nw2/wire"
@@ -22,10 +24,9 @@ func fingerprintALPN(nw3 bool) string {
 	return wire.DefaultALPN
 }
 
-// fingerprintTimeout bounds the TCP dial plus TLS handshake for one share link.
-// There is no NOW_HANDSHAKE_TIMEOUT on the Go side, so this mirrors the Rust
-// default handshake/deadline pair.
-const fingerprintTimeout = 15 * time.Second
+// fingerprintTimeout bounds the TCP dial plus TLS handshake for one share link
+// when the Shared Key has not been validated yet. A validated key uses the
+// derived NOW_HANDSHAKE_TIMEOUT instead.
 
 // runFingerprint reads the leaf TLS certificate SHA-256 from a Nowhere share
 // link (nowhere://) and prints it as 64 lowercase hex characters. It dials only
@@ -90,7 +91,11 @@ func runFingerprint(raw string) error {
 }
 
 func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 bool) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), fingerprintTimeout)
+	timeout := runtime.HandshakeTimeout(key)
+	if !nw3 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)

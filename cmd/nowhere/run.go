@@ -15,11 +15,20 @@ import (
 	"github.com/ohmycggk/nowhere-go/nw2/wire"
 	"github.com/ohmycggk/nowhere-go/portal"
 	"github.com/ohmycggk/nowhere-go/qio"
+	"github.com/ohmycggk/nowhere-go/runtime"
 	"github.com/ohmycggk/nowhere-go/vector"
 	nw3wire "github.com/ohmycggk/nowhere-go/wire"
 )
 
+func loadNW3(cfg nw3Config) (runtime.Settings, error) {
+	morphUDP := cfg.morph && cfg.kind != nw3Portal && cfg.endpoint.hasUDP() && !cfg.endpoint.hasTCP()
+	return runtime.Load(cfg.key, morphUDP)
+}
+
 func runNW3(ctx context.Context, cfg nw3Config, log *logger) error {
+	if _, err := loadNW3(cfg); err != nil {
+		return err
+	}
 	switch cfg.kind {
 	case nw3Portal:
 		return runNW3Portal(ctx, cfg, log)
@@ -53,13 +62,14 @@ func runNW3Portal(ctx context.Context, cfg nw3Config, log *logger) error {
 		}
 	}
 	srv, err := portal.New(portal.Config{
-		SharedKey:    cfg.key,
-		Morph:        cfg.morph,
-		TLS:          tlsCfg,
-		Upstream:     upstream,
-		Egress:       cfg.exit == nw3ExitEgress,
-		UploadMbps:   cfg.rate,
-		DownloadMbps: cfg.etar,
+		SharedKey:        cfg.key,
+		Morph:            cfg.morph,
+		TLS:              tlsCfg,
+		Upstream:         upstream,
+		Egress:           cfg.exit == nw3ExitEgress,
+		UploadMbps:       cfg.rate,
+		DownloadMbps:     cfg.etar,
+		DatagramOverhead: nw3DatagramOverhead(cfg.morph),
 	})
 	if err != nil {
 		return err
@@ -80,6 +90,15 @@ func runNW3Portal(ctx context.Context, cfg nw3Config, log *logger) error {
 		go func() { errCh <- srv.ServeQUIC(ctx, qln) }()
 	}
 	return waitDone(ctx, errCh)
+}
+
+// nw3DatagramOverhead is the Morph UDP nonce. QUIC never sees it, so the
+// datagram budget must leave room for it or a probed MTU overshoots by 12.
+func nw3DatagramOverhead(morph bool) int {
+	if morph {
+		return 12
+	}
+	return 0
 }
 
 func runNW3Vector(ctx context.Context, cfg nw3Config, log *logger) error {
@@ -113,15 +132,26 @@ func runNW3Egress(ctx context.Context, cfg nw3Config, log *logger) error {
 	if err != nil {
 		return err
 	}
-	return egress.Run(ctx, egress.Config{
-		SharedKey: cfg.key,
-		DialQUIC: func(ctx context.Context) (qio.Conn, error) {
+	eg := egress.Config{
+		SharedKey:        cfg.key,
+		Morph:            cfg.morph,
+		Upstream:         directUpstream{fd},
+		UploadMbps:       cfg.rate,
+		DownloadMbps:     cfg.etar,
+		DatagramOverhead: nw3DatagramOverhead(cfg.morph),
+	}
+	if cfg.endpoint.hasUDP() && !cfg.endpoint.hasTCP() {
+		eg.DialQUIC = func(ctx context.Context) (qio.Conn, error) {
 			return dialNW3Carrier(ctx, cfg, tlsCfg, true)
-		},
-		Upstream:     directUpstream{fd},
-		UploadMbps:   cfg.rate,
-		DownloadMbps: cfg.etar,
-	})
+		}
+	} else {
+		eg.PortalAddr = cfg.endpoint.tcpAddr()
+		eg.TLS = tlsCfg
+		eg.DialTCP = func(dialCtx context.Context, addr string) (net.Conn, error) {
+			return fd.DialContext(dialCtx, "tcp", addr)
+		}
+	}
+	return egress.Run(ctx, eg)
 }
 
 func newNW3Vector(ctx context.Context, cfg nw3Config) (*vector.Client, error) {
@@ -130,10 +160,11 @@ func newNW3Vector(ctx context.Context, cfg nw3Config) (*vector.Client, error) {
 		return nil, err
 	}
 	vc := vector.Config{
-		SharedKey:    cfg.key,
-		Morph:        cfg.morph,
-		UploadMbps:   cfg.rate,
-		DownloadMbps: cfg.etar,
+		SharedKey:        cfg.key,
+		Morph:            cfg.morph,
+		UploadMbps:       cfg.rate,
+		DownloadMbps:     cfg.etar,
+		DatagramOverhead: nw3DatagramOverhead(cfg.morph),
 	}
 	if cfg.endpoint.hasUDP() && !cfg.endpoint.hasTCP() {
 		vc.DialQUIC = func(dialCtx context.Context) (qio.Conn, error) {
@@ -160,9 +191,18 @@ func dialNW3Carrier(ctx context.Context, cfg nw3Config, tlsCfg *tls.Config, clie
 		return nil, err
 	}
 	if cfg.morph {
-		pc = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+		pc, err = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+		if err != nil {
+			_ = pc.Close()
+			return nil, err
+		}
 	}
-	conn, err := dialNW3QUIC(ctx, pc, cfg.endpoint.udpAddr(), tlsCfg)
+	rt, err := loadNW3(cfg)
+	if err != nil {
+		_ = pc.Close()
+		return nil, err
+	}
+	conn, err := dialNW3QUIC(ctx, pc, cfg.endpoint.udpAddr(), tlsCfg, rt.UDPIdleTimeout, rt.Profile)
 	if err != nil {
 		_ = pc.Close()
 		return nil, err
@@ -178,9 +218,16 @@ func listenNW3UDP(cfg nw3Config, tlsCfg *tls.Config, client bool, log *logger) (
 	var listeners []qio.Listener
 	for _, pc := range pcs {
 		if cfg.morph {
-			pc = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+			pc, err = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+			if err != nil {
+				return nil, err
+			}
 		}
-		ln, err := listenNW3QUIC(pc, tlsCfg)
+		rt, err := loadNW3(cfg)
+		if err != nil {
+			return nil, err
+		}
+		ln, err := listenNW3QUIC(pc, tlsCfg, rt.UDPIdleTimeout, rt.Profile)
 		if err != nil {
 			return nil, err
 		}

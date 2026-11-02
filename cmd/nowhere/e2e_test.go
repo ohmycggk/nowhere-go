@@ -23,9 +23,14 @@ import (
 	"github.com/ohmycggk/nowhere-go/nw2/wire"
 	"github.com/ohmycggk/nowhere-go/portal"
 	"github.com/ohmycggk/nowhere-go/qio"
+	"github.com/ohmycggk/nowhere-go/runtime"
 	"github.com/ohmycggk/nowhere-go/vector"
 	nw3wire "github.com/ohmycggk/nowhere-go/wire"
 )
+
+func testProfile() runtime.Profile {
+	return runtime.Profile{Name: "throughput", Stream: 64 << 10, Connection: 64 << 10, Send: 64 << 10}
+}
 
 func TestURLEdition(t *testing.T) {
 	key := "0123456789abcdef0123456789abcdef"
@@ -59,9 +64,12 @@ func TestMorphUDPDropsUnsupportedVersion(t *testing.T) {
 		}
 		packet := pc
 		if morphing {
-			packet = morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
+			packet, err = morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}})
+		ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +94,10 @@ func TestMorphUDPDropsUnsupportedVersion(t *testing.T) {
 		body[5] = 8
 		target := pc.LocalAddr().(*net.UDPAddr)
 		if morphing {
-			client := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			client, err := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if _, err := client.WriteTo(body, target); err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +106,10 @@ func TestMorphUDPDropsUnsupportedVersion(t *testing.T) {
 		}
 		if morphing {
 			// One more copy, so a single delayed reply cannot be mistaken for a drop.
-			client := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			client, err := morph.WrapPacketConn(probe, morph.Derive([]byte(key)), true)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if _, err := client.WriteTo(body, target); err != nil {
 				t.Fatal(err)
 			}
@@ -129,8 +143,11 @@ func TestMorphQUICStillHandshakes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	packet := morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
-	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}})
+	packet, err := morph.WrapPacketConn(pc, morph.Derive([]byte(key)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,12 +187,15 @@ func TestMorphQUICStillHandshakes(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			wrapped := morph.WrapPacketConn(raw, morph.Derive([]byte(key)), true)
+			wrapped, err := morph.WrapPacketConn(raw, morph.Derive([]byte(key)), true)
+			if err != nil {
+				return nil, err
+			}
 			return dialNW3QUIC(ctx, wrapped, pc.LocalAddr().String(), &tls.Config{
 				InsecureSkipVerify: true,
 				ServerName:         "nowhere",
 				NextProtos:         []string{nw3wire.ALPN},
-			})
+			}, 0, testProfile())
 		},
 	})
 	if err != nil {
@@ -214,7 +234,7 @@ func TestNW3QUICFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}})
+	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +292,7 @@ func TestNW3QUICFlows(t *testing.T) {
 				InsecureSkipVerify: true,
 				ServerName:         "nowhere",
 				NextProtos:         []string{nw3wire.ALPN},
-			})
+			}, 0, testProfile())
 		},
 	})
 	if err != nil {
@@ -333,7 +353,7 @@ func TestEgressBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}})
+	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +393,7 @@ func TestEgressBusy(t *testing.T) {
 			InsecureSkipVerify: true,
 			ServerName:         "nowhere",
 			NextProtos:         []string{nw3wire.ALPN},
-		})
+		}, 0, testProfile())
 	}
 	egCtx, egCancel := context.WithCancel(context.Background())
 	defer egCancel()
@@ -412,12 +432,18 @@ func TestEgressBusy(t *testing.T) {
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		t.Fatal(err)
 	}
-	busyCtx, busyCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer busyCancel()
-	err = egress.Run(busyCtx, egress.Config{SharedKey: key, DialQUIC: dial, Upstream: portal.Direct{}})
-	if err != egress.ErrBusy {
-		t.Fatalf("second egress: %v", err)
+	// A second QUIC Egress joins the FIFO instead of being rejected. QUIC has
+	// no pending cap; BUSY is the TLS registration limit.
+	second, err := vector.New(vector.Config{SharedKey: key, DialQUIC: dial})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer second.Close()
+	again, err := second.OpenTCP(context.Background(), target)
+	if err != nil {
+		t.Fatalf("second egress flow: %v", err)
+	}
+	_ = again.Close()
 }
 
 func TestCrossALPNRejected(t *testing.T) {

@@ -32,20 +32,37 @@ func (f *Flow) Close() {
 
 // Router demultiplexes datagrams on one QUIC connection.
 type Router struct {
-	conn qio.Conn
-	mu   sync.Mutex
-	tab  map[uint32]*Flow
-	re   *wire.Reassembler
-	pkt  atomic.Uint32
+	conn     qio.Conn
+	overhead int
+	mu       sync.Mutex
+	tab      map[uint32]*Flow
+	re       *wire.Reassembler
+	pkt      atomic.Uint32
 }
 
-// NewRouter returns a router. Call Run to start the receive loop.
-func NewRouter(conn qio.Conn) *Router {
+// NewRouter returns a router whose reassembly reservation is maxBytes.
+// Zero uses the 4 MiB default. Call Run to start the receive loop.
+func NewRouter(conn qio.Conn, maxBytes int) *Router {
+	if maxBytes <= 0 {
+		maxBytes = 4 << 20
+	}
 	return &Router{
 		conn: conn,
 		tab:  map[uint32]*Flow{},
-		re:   wire.NewReassembler(64, 4<<20, 0),
+		re:   wire.NewReassembler(64, maxBytes, 0),
 	}
+}
+
+// SetOverhead reserves bytes that sit below the QUIC datagram, such as the
+// Morph UDP nonce. Encoding uses MaxDatagramSize minus this many bytes so the
+// prefix counts toward the path MTU. Zero leaves the transport size unchanged.
+func (r *Router) SetOverhead(n int) {
+	if r == nil || n < 0 {
+		return
+	}
+	r.mu.Lock()
+	r.overhead = n
+	r.mu.Unlock()
 }
 
 // Register installs a flow. The previous flow with the same id is closed.
@@ -82,6 +99,12 @@ func (r *Router) Send(id uint32, payload []byte) error {
 	if max <= 0 {
 		max = 1200
 	}
+	r.mu.Lock()
+	overhead := r.overhead
+	r.mu.Unlock()
+	if overhead > 0 && max > overhead {
+		max -= overhead
+	}
 	frames, err := wire.EncodePacket(id, n, payload, max)
 	if err != nil {
 		return err
@@ -117,6 +140,11 @@ func (r *Router) Run(ctx context.Context) {
 		case 0:
 			r.deliver(d.FlowID, append([]byte(nil), d.Payload...))
 		case 1:
+			// An unknown or not-yet-ready flow must not take a reassembly
+			// slot. The control stream installs the route before READY.
+			if !r.known(d.FlowID) {
+				continue
+			}
 			pkt, err := r.re.Push(d, time.Now())
 			if err != nil || pkt == nil {
 				continue
@@ -126,6 +154,13 @@ func (r *Router) Run(ctx context.Context) {
 			// CLOSE is auxiliary. The control stream owns lifetime.
 		}
 	}
+}
+
+func (r *Router) known(id uint32) bool {
+	r.mu.Lock()
+	_, ok := r.tab[id]
+	r.mu.Unlock()
+	return ok
 }
 
 func (r *Router) deliver(id uint32, payload []byte) {

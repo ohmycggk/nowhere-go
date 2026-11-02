@@ -17,7 +17,7 @@ The two versions do not handshake with each other. One process runs one version.
 Commands:
   <portal-url>     Run the Portal relay.
   <vector-url>     Run the Vector SOCKS5 client.
-  <egress-url>     Run a Nowhere 3 Egress exit (QUIC only).
+  <egress-url>     Run a Nowhere 3 Egress exit (TLS or QUIC).
   generate-key     Print 16 random bytes as 32 lowercase hex characters.
   fingerprint      Print the leaf certificate SHA-256 over TCP.
   probe            End-to-end TCP flow setup; sends no application payload.
@@ -29,7 +29,8 @@ Nowhere 3 (default), shared key exactly 32 lowercase hex, morph defaults on:
   portal://<key>@<host>/<carrier>:<port>[/<carrier>:<port>]
   vector://<key>@<host>:<port>?in=<socks-listen>
   vector://<key>@<host>/udp:<port>?in=<socks-listen>
-  egress://<key>@<host>:<port>
+  egress://<key>@<host>:<port>                 QUIC
+  egress://<key>@<host>/tcp:<port>            TLS
   nowhere://<key>@<host>:<port>[?net=tcp|udp&morph=0|1]   fingerprint
 
 Nowhere 2, selected only by up/down/mux/next/socks. Morph defaults off:
@@ -48,7 +49,7 @@ Examples:
 Nowhere 3 options:
   in=<socks>          Vector SOCKS5 listener. Required except for probe.
   out=direct|egress|<socks>
-                      Portal exit. Default: direct. egress needs QUIC.
+                      Portal exit. Default: direct. egress accepts TLS and QUIC.
   morph=0|1           Default: 1. Peers must agree. Not negotiated.
   rate, etar          Upload and download caps in Mbps. Default: 0 (unlimited).
   sni, pin            Vector and Egress certificate checks.
@@ -60,10 +61,14 @@ Portal keys of 32-64 lowercase hex, and free-form Vector keys.
 
 Environment:
   NOW_MORPH_TCP_PRELUDE          nw3 TCP Morph prelude: fade (default), full8, or low7.
-                                 A 3.2 Portal requires an authenticated prelude.
+                                 A 3.3 Portal requires an authenticated prelude.
                                  A tag mismatch is rejected. Peers do not negotiate
                                  the policy. nw2 stays full8 (default) or low7 and
                                  rejects fade.
+  NOW_MORPH_UDP_PRELUDE          nw3 Morph QUIC client prelude: fade (default),
+                                 full8, or low7. One 12-byte datagram per socket.
+  NOW_HANDSHAKE_TIMEOUT          Unset derives 3–30s from the Shared Key.
+                                 An explicit duration overrides it.
 
 The TUI and status observer are not included in this Go binary.
 `

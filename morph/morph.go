@@ -24,10 +24,12 @@ import (
 	"time"
 
 	"github.com/ohmycggk/nowhere-go/internal/chacha20"
+	"github.com/ohmycggk/nowhere-go/runtime"
 )
 
 const (
 	nonceLen      = 12
+	udpPreludeLen = 12
 	preludeLen    = 64
 	streamLimit   = (1 << 38) - 64
 	preludeEnv    = "NOW_MORPH_TCP_PRELUDE"
@@ -385,15 +387,33 @@ func checkLimit(offset uint64, n int) error {
 // that Nowhere 3.2's quinn 0.11.19 accepts, before the host QUIC stack can
 // answer it. Short headers pass. Clients do not filter.
 //
+// A client socket also sends one independent 12-byte UDP Prelude before the
+// first QUIC datagram on that socket. The Prelude is not masked and carries no
+// nonce. Portal discards datagrams of 12 bytes or fewer and does not require
+// one to arrive. Server sockets send no Prelude.
+//
 // The result is not a *net.UDPConn, so quic-go does not take its batching path.
 // It reads through PacketConn.ReadFrom, which is where the server filter runs.
-// No extra socket is opened per peer.
-func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) net.PacketConn {
+// No extra socket is opened per peer. A future batching socket must still give
+// every QUIC segment its own nonce and must not treat the Prelude as a segment.
+func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) (net.PacketConn, error) {
 	tx, rx := keys.UDPC2S, keys.UDPS2C
 	if !client {
 		tx, rx = keys.UDPS2C, keys.UDPC2S
 	}
-	return &packetConn{PacketConn: pc, txKey: tx, rxKey: rx, server: !client}
+	c := &packetConn{PacketConn: pc, txKey: tx, rxKey: rx, server: !client}
+	if client {
+		policy, err := udpPreludePolicy()
+		if err != nil {
+			return nil, err
+		}
+		prelude, err := generateUDPPrelude(policy)
+		if err != nil {
+			return nil, err
+		}
+		c.prelude = prelude[:]
+	}
+	return c, nil
 }
 
 type packetConn struct {
@@ -403,6 +423,9 @@ type packetConn struct {
 	server  bool
 	mu      sync.Mutex
 	readBuf []byte
+	// prelude is the one unsent UDP Prelude. Nil after a successful submit
+	// and on server sockets.
+	prelude []byte
 }
 
 // quinnVersions are quinn-proto 0.11.19 DEFAULT_SUPPORTED_VERSIONS, the set
@@ -442,16 +465,84 @@ func supportedQUICPacket(packet []byte) bool {
 }
 
 func (c *packetConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	// The lock covers only the pending Prelude. Holding it across the socket
+	// write deadlocks with ReadFrom, which quic-go runs concurrently.
+	c.mu.Lock()
+	prelude := c.prelude
+	c.prelude = nil
+	c.mu.Unlock()
+	if len(prelude) > 0 {
+		n, err := c.PacketConn.WriteTo(prelude, addr)
+		if n < len(prelude) {
+			c.mu.Lock()
+			if c.prelude == nil {
+				c.prelude = prelude
+			}
+			c.mu.Unlock()
+			if err == nil {
+				err = io.ErrShortWrite
+			}
+			return 0, err
+		}
+	}
 	return writeMasked(c.PacketConn, p, addr, &c.txKey)
 }
 
-func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cap(c.readBuf) < nonceLen+len(p) {
-		c.readBuf = make([]byte, nonceLen+len(p))
+func udpPreludePolicy() (string, error) {
+	return runtime.UDPPreludePolicy()
+}
+
+// generateUDPPrelude builds the independent 12-byte client datagram.
+// fade is 2 printable ASCII, 8 low7, and 2 full8 bytes.
+func generateUDPPrelude(policy string) ([udpPreludeLen]byte, error) {
+	return generateUDPPreludeWith(policy, readEntropy)
+}
+
+func generateUDPPreludeWith(policy string, fill func([]byte) error) ([udpPreludeLen]byte, error) {
+	var out [udpPreludeLen]byte
+	if err := fill(out[:]); err != nil {
+		return out, err
 	}
-	buf := c.readBuf[:nonceLen+len(p)]
+	switch policy {
+	case "full8":
+	case "low7":
+		for i := range out {
+			out[i] &= 0x7f
+		}
+	case "fade":
+		for i := 0; i < 2; i++ {
+			printable, err := sampleBelow(out[i], 95, fill)
+			if err != nil {
+				return out, err
+			}
+			out[i] = 0x20 + printable
+		}
+		for i := 2; i < 10; i++ {
+			out[i] &= 0x7f
+		}
+	default:
+		return out, fmt.Errorf("%s must be fade, full8 or low7", runtime.EnvMorphUDPPrelude)
+	}
+	return out, nil
+}
+
+func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	need := nonceLen + len(p)
+	c.mu.Lock()
+	buf := c.readBuf
+	c.readBuf = nil
+	c.mu.Unlock()
+	if cap(buf) < need {
+		buf = make([]byte, need)
+	}
+	buf = buf[:need]
+	defer func() {
+		c.mu.Lock()
+		if cap(c.readBuf) < cap(buf) {
+			c.readBuf = buf
+		}
+		c.mu.Unlock()
+	}()
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(buf)
 		if err != nil {

@@ -239,13 +239,160 @@ func TestServerDropsUnsupportedQUICVersions(t *testing.T) {
 	}
 }
 
+func TestUDPPreludeFadeLayoutAndSingleSend(t *testing.T) {
+	for i := 0; i < 32; i++ {
+		got, err := generateUDPPreludeWith("fade", readEntropy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range got[:2] {
+			if b < 0x20 || b > 0x7e {
+				t.Fatalf("fade ascii %#x", b)
+			}
+		}
+		for _, b := range got[2:10] {
+			if b&0x80 != 0 {
+				t.Fatalf("fade low7 %#x", b)
+			}
+		}
+	}
+	low, err := generateUDPPreludeWith("low7", readEntropy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, b := range low {
+		if b&0x80 != 0 {
+			t.Fatalf("low7[%d]=%#x", i, b)
+		}
+	}
+
+	keys := Derive([]byte("0123456789abcdef0123456789abcdef"))
+	rawClient, rawServer := packetPipe()
+	defer rawClient.Close()
+	defer rawServer.Close()
+	client, err := WrapPacketConn(rawClient, keys, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := WrapPacketConn(rawServer, keys, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{0x40, 1, 2, 3}
+	errCh := make(chan error, 1)
+	go func() {
+		if _, err := client.WriteTo(payload, nil); err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := client.WriteTo(payload, nil); err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+	buf := make([]byte, 64)
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := server.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("first delivered %#x", buf[:n])
+	}
+	n, _, err = server.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("second delivered %#x", buf[:n])
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	// The server socket itself never emits a prelude.
+	go func() {
+		_, _ = server.WriteTo(payload, nil)
+	}()
+	n, _, err = client.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("server write %#x", buf[:n])
+	}
+}
+
+func TestUDPPreludeWouldBlockRetriesSameBytes(t *testing.T) {
+	keys := Derive([]byte("0123456789abcdef0123456789abcdef"))
+	raw := &blockOnceConn{}
+	client, err := WrapPacketConn(raw, keys, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteTo([]byte{1}, nil); !errors.As(err, new(net.Error)) {
+		t.Fatalf("first write = %v, want a timeout", err)
+	}
+	if _, err := client.WriteTo([]byte{1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.writes) != 2 {
+		t.Fatalf("writes = %d, want prelude then datagram", len(raw.writes))
+	}
+	if len(raw.writes[0]) != udpPreludeLen {
+		t.Fatalf("prelude length %d", len(raw.writes[0]))
+	}
+	if !bytes.Equal(raw.blocked, raw.writes[0]) {
+		t.Fatal("retried prelude bytes differ")
+	}
+	if len(raw.writes[1]) <= udpPreludeLen {
+		t.Fatal("second write was not a masked datagram")
+	}
+}
+
+type blockOnceConn struct {
+	net.PacketConn
+	once    int
+	blocked []byte
+	writes  [][]byte
+}
+
+func (c *blockOnceConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	c.once++
+	if c.once == 1 {
+		c.blocked = append([]byte(nil), p...)
+		return 0, timeoutError{}
+	}
+	c.writes = append(c.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+func (c *blockOnceConn) ReadFrom([]byte) (int, net.Addr, error) { return 0, nil, io.EOF }
+func (c *blockOnceConn) Close() error                           { return nil }
+func (c *blockOnceConn) LocalAddr() net.Addr                    { return nil }
+func (c *blockOnceConn) SetDeadline(time.Time) error            { return nil }
+func (c *blockOnceConn) SetReadDeadline(time.Time) error        { return nil }
+func (c *blockOnceConn) SetWriteDeadline(time.Time) error       { return nil }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
 func TestServerReadFromSkipsUnsupportedThenReturnsNext(t *testing.T) {
 	keys := Derive([]byte("0123456789abcdef0123456789abcdef"))
 	rawClient, rawServer := packetPipe()
 	defer rawClient.Close()
 	defer rawServer.Close()
-	server := WrapPacketConn(rawServer, keys, false)
-	client := WrapPacketConn(rawClient, keys, true)
+	server, err := WrapPacketConn(rawServer, keys, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := WrapPacketConn(rawClient, keys, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rejected := []byte{0xc0, 0xff, 0xff, 0xff, 0xff, 1, 2, 3}
 	accepted := []byte{0x40, 7, 8, 9}

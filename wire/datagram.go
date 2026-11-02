@@ -304,14 +304,18 @@ func (r *Reassembler) Push(d Datagram, now time.Time) ([]byte, error) {
 		total:   need,
 		parts:   make([][]byte, d.Count),
 	}
-	slot.parts[d.Index] = append([]byte(nil), d.Payload...)
+	idx := int(d.Index)
+	if idx >= len(slot.parts) {
+		return nil, errors.New("nw3: invalid fragment metadata")
+	}
+	slot.parts[idx] = append([]byte(nil), d.Payload...)
 	slot.got = 1
 	slot.bytes = len(d.Payload)
-	r.slots[key] = slot
-	r.reserved += need
 	if slot.count == 1 {
 		return nil, errors.New("nw3: invalid fragment metadata")
 	}
+	r.slots[key] = slot
+	r.reserved += need
 	return nil, nil
 }
 
