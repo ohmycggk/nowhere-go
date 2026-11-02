@@ -36,6 +36,9 @@ and all clients.
   `0123456789abcdef0123456789abcdef` derives 9100ms. An explicit duration
   overrides it and may fall outside 3–30 seconds.
 - The CLI version is 3.3.0.
+- The library module requires Go 1.21. CI drops the EOL `1.20.x` leg, which
+  could not build `context.AfterFunc`, and tests the library on `1.21.x`.
+  The CLI still requires Go 1.26 and is not built on the `1.21.x` leg.
 
 ### Unchanged hashes
 

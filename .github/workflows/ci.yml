@@ -22,11 +22,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Align with go.mod (1.20) + CLI toolchain (quic-go needs 1.26) + latest stable.
-        # 1.20.x is EOL upstream: regression testing only. It never receives security
-        # fixes (e.g. CVE-2026-111943 crypto/x509) and is never used for release
-        # builds; release.yml gates dist on a fixed toolchain.
-        go: ["1.20.x", "1.26.x", "stable"]
+        # Align with go.mod (1.21, for context.AfterFunc) + CLI toolchain
+        # (quic-go needs 1.26) + latest stable. 1.20.x was dropped: it is EOL,
+        # never used for release builds, and the library now calls Go 1.21 APIs.
+        go: ["1.21.x", "1.26.x", "stable"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -46,13 +45,13 @@ jobs:
       - name: Run nowhere-check
         run: /tmp/nowhere-check
       - name: Test and build Portal/Vector CLI
-        if: matrix.go != '1.20.x'
+        if: matrix.go != '1.21.x'
         run: |
           cd cmd/nowhere
           GOWORK=off go test ./...
           GOWORK=off go build -o /tmp/nowhere .
       - name: nowhere CLI help
-        if: matrix.go != '1.20.x'
+        if: matrix.go != '1.21.x'
         run: /tmp/nowhere -h
 
   staticcheck:

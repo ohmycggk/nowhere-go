@@ -11,7 +11,7 @@ Protocol behavior follows the official Rust project:
 
 ```text
 module github.com/ohmycggk/nowhere-go
-go 1.20
+go 1.21
 ```
 
 License: **GPL-3.0** (same family as upstream Nowhere).
@@ -294,7 +294,7 @@ go run ./cmd/nowhere-check            # wire vectors + self-check
 go run ./cmd/nowhere-check -version
 ```
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.20.x / 1.26.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`. The Portal CLI (`cmd/nowhere`) needs Go 1.26 because it vendors [quic-go](https://github.com/quic-go/quic-go) v0.62.0; the 1.20.x job tests the library only. A FreeBSD 15.1 amd64 job runs the same single-version test, vet, and CLI checks, and cross-builds `freebsd/arm64`. Race, fuzz, and benchmark jobs stay on Linux.
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) validates Go **1.21.x / 1.26.x / stable** on push (`main`/`test`/tags), PR, and `workflow_dispatch`. The Portal CLI (`cmd/nowhere`) needs Go 1.26 because it vendors [quic-go](https://github.com/quic-go/quic-go) v0.62.0; the 1.21.x job tests the library only. A FreeBSD 15.1 amd64 job runs the same single-version test, vet, and CLI checks, and cross-builds `freebsd/arm64`. Race, fuzz, and benchmark jobs stay on Linux.
 
 The standalone **Portal / Vector** binary lives in [`cmd/nowhere`](cmd/nowhere). It accepts the same `portal://` and `vector://` URLs as the Rust `nowhere` CLI, plus the `generate-key`, `fingerprint`, and `probe` toolbox subcommands (the TUI and `status` are not included).
 
