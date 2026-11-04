@@ -69,7 +69,7 @@ func TestMorphUDPDropsUnsupportedVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
+		ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,7 +147,7 @@ func TestMorphQUICStillHandshakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
+	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestMorphQUICStillHandshakes(t *testing.T) {
 				InsecureSkipVerify: true,
 				ServerName:         "nowhere",
 				NextProtos:         []string{nw3wire.ALPN},
-			}, 0, testProfile())
+			}, 0, testProfile(), false)
 		},
 	})
 	if err != nil {
@@ -234,7 +234,7 @@ func TestNW3QUICFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
+	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestNW3QUICFlows(t *testing.T) {
 				InsecureSkipVerify: true,
 				ServerName:         "nowhere",
 				NextProtos:         []string{nw3wire.ALPN},
-			}, 0, testProfile())
+			}, 0, testProfile(), false)
 		},
 	})
 	if err != nil {
@@ -353,7 +353,7 @@ func TestEgressBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pc.Close()
-	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile())
+	ln, err := listenNW3QUIC(pc, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestEgressBusy(t *testing.T) {
 			InsecureSkipVerify: true,
 			ServerName:         "nowhere",
 			NextProtos:         []string{nw3wire.ALPN},
-		}, 0, testProfile())
+		}, 0, testProfile(), false)
 	}
 	egCtx, egCancel := context.WithCancel(context.Background())
 	defer egCancel()

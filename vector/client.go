@@ -174,6 +174,11 @@ func (c *Client) openQUIC(ctx context.Context, kind wire.FlowKind, target wire.T
 	if err != nil {
 		return nil, err
 	}
+	// A UDP flow needs DATAGRAM support; fail before opening a stream rather
+	// than falling back to another carrier. Core forbids that fallback.
+	if kind == wire.FlowUDP && conn.MaxDatagramSize() <= 0 {
+		return nil, errors.New("nw3: portal does not support UDP DATAGRAMs")
+	}
 	// The first OpenStream is the authentication stream and must be stream 0.
 	// Later flows wait until that open has an id, so AuthFrame cannot land on
 	// another stream. A failed open does not consume the flag. The wait also
@@ -426,6 +431,7 @@ func (c *udpConn) Write(p []byte) (int, error) {
 	n, err := c.PacketConn.Write(p)
 	return n, err
 }
+
 func (c *udpConn) Close() error {
 	_ = c.PacketConn.Close()
 	// FIN the control stream before cancelling its read. CLOSE is only a hint.

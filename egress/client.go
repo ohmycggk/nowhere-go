@@ -332,6 +332,12 @@ func (s *session) serveStream(ctx context.Context, router *dgram.Router, st qio.
 }
 
 func (s *session) serveOne(ctx context.Context, client *pipe, router *dgram.Router, kind wire.FlowKind, target wire.Target, streamID uint64, server bool) {
+	// A UDP flow over this QUIC carrier needs DATAGRAM support. Reject it
+	// before the target dial and before READY; Core forbids a fallback.
+	if kind == wire.FlowUDP && router != nil && router.MaxDatagramSize() <= 0 {
+		_ = wire.WriteSetupResult(client, wire.SetupInternalError)
+		return
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, s.rt.UDPDialTimeout)
 	if kind == wire.FlowTCP {
 		cancel()

@@ -3,6 +3,7 @@ package dgram
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -89,6 +90,10 @@ func (r *Router) Unregister(id uint32) {
 	r.re.RemoveFlow(id)
 }
 
+// MaxDatagramSize reports the peer's DATAGRAM payload limit for this
+// connection, or zero when the peer did not negotiate DATAGRAM support.
+func (r *Router) MaxDatagramSize() int { return r.conn.MaxDatagramSize() }
+
 // Send encodes one payload and writes it without blocking the caller on a peer flow.
 func (r *Router) Send(id uint32, payload []byte) error {
 	n := r.pkt.Add(1)
@@ -97,7 +102,8 @@ func (r *Router) Send(id uint32, payload []byte) error {
 	}
 	max := r.conn.MaxDatagramSize()
 	if max <= 0 {
-		max = 1200
+		// Core forbids a fallback carrier when DATAGRAM support is missing.
+		return errors.New("nw3: DATAGRAM support unavailable")
 	}
 	r.mu.Lock()
 	overhead := r.overhead

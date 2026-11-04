@@ -334,6 +334,13 @@ func (s *Server) serveFlow(ctx context.Context, kind wire.FlowKind, target wire.
 		return
 	}
 	defer s.flows.release()
+	// A UDP flow over QUIC needs DATAGRAM support on the Vector connection.
+	// Reject it before any target dial or READY; Core forbids a fallback.
+	if kind == wire.FlowUDP && router != nil && router.MaxDatagramSize() <= 0 {
+		_ = wire.WriteSetupResult(client, wire.SetupInternalError)
+		_ = client.Close()
+		return
+	}
 	setupCtx, cancel := context.WithTimeout(ctx, s.rt.FlowSetupTimeout)
 	defer cancel()
 	if s.egress {
@@ -425,6 +432,13 @@ func (s *Server) serveViaEgress(ctx context.Context, kind wire.FlowKind, target 
 	}
 	if res != wire.SetupReady {
 		_ = wire.WriteSetupResult(client, res)
+		_ = client.Close()
+		return
+	}
+	// A UDP flow forwarded to a QUIC Egress needs DATAGRAM support on that
+	// connection too. Fail before READY rather than after the target dial.
+	if kind == wire.FlowUDP && slot.router != nil && slot.router.MaxDatagramSize() <= 0 {
+		_ = wire.WriteSetupResult(client, wire.SetupInternalError)
 		_ = client.Close()
 		return
 	}
@@ -576,6 +590,7 @@ func (p *pipe) Close() error {
 	}
 	return nil
 }
+
 func (p *pipe) CloseWrite() error {
 	if cw, ok := p.write.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite()

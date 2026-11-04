@@ -8,6 +8,15 @@ release.
 A wire-protocol baseline change requires a lockstep upgrade of the Rust Portal
 and all clients.
 
+## Unreleased
+
+### Fixed
+
+- Regenerated `UPSTREAM.lock` from the Nowhere 3.3.0 checkout. `protocol_sha256`
+  now records the 3.3.0 wire sources, replacing the 3.2 placeholder used at
+  release. The nw3 vector corpus is unchanged, so `vector_tree_sha256` stays
+  the same.
+
 ## v3.3.0 - 2026-10-31
 
 ### Changed

@@ -202,7 +202,7 @@ func dialNW3Carrier(ctx context.Context, cfg nw3Config, tlsCfg *tls.Config, clie
 		_ = pc.Close()
 		return nil, err
 	}
-	conn, err := dialNW3QUIC(ctx, pc, cfg.endpoint.udpAddr(), tlsCfg, rt.UDPIdleTimeout, rt.Profile)
+	conn, err := dialNW3QUIC(ctx, pc, cfg.endpoint.udpAddr(), tlsCfg, rt.UDPIdleTimeout, rt.Profile, cfg.morph)
 	if err != nil {
 		_ = pc.Close()
 		return nil, err
@@ -227,7 +227,7 @@ func listenNW3UDP(cfg nw3Config, tlsCfg *tls.Config, client bool, log *logger) (
 		if err != nil {
 			return nil, err
 		}
-		ln, err := listenNW3QUIC(pc, tlsCfg, rt.UDPIdleTimeout, rt.Profile)
+		ln, err := listenNW3QUIC(pc, tlsCfg, rt.UDPIdleTimeout, rt.Profile, cfg.morph)
 		if err != nil {
 			return nil, err
 		}

@@ -31,6 +31,8 @@ type Conn interface {
 	OpenStream(ctx context.Context) (Stream, error)
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 	SendDatagram(b []byte) error
+	// MaxDatagramSize reports the peer's DATAGRAM payload limit, or zero when
+	// the connection did not negotiate DATAGRAM support.
 	MaxDatagramSize() int
 	CloseWithError(code uint64, message string) error
 	Context() context.Context
