@@ -12,9 +12,8 @@ import (
 )
 
 type supportTestConn struct {
-	recv     chan []byte
-	max      int
-	received int
+	recv chan []byte
+	max  int
 }
 
 func (c *supportTestConn) TLSVersion() uint16        { return 0x0304 }
