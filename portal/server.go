@@ -216,6 +216,7 @@ func (s *Server) serveTCP(ctx context.Context, raw net.Conn) {
 		_ = tlsConn.Close()
 		return
 	}
+	defer tlsConn.Close()
 	_ = tlsConn.SetDeadline(time.Now().Add(s.rt.FlowSetupTimeout))
 	kind, target, ok, err := wire.ReadFlowRequest(br)
 	rw := &pipe{Reader: br, write: tlsConn, closer: tlsConn}
@@ -313,6 +314,7 @@ func (s *Server) serveVectorConn(ctx context.Context, conn qio.Conn, router *dgr
 }
 
 func (s *Server) readAndServe(ctx context.Context, router *dgram.Router, st qio.Stream, br *bufio.Reader, client bool) {
+	defer st.Close()
 	_ = st.SetReadDeadline(time.Now().Add(s.rt.FlowSetupTimeout))
 	kind, target, ok, err := wire.ReadFlowRequest(br)
 	_ = st.SetReadDeadline(time.Time{})
@@ -328,6 +330,7 @@ func (s *Server) readAndServe(ctx context.Context, router *dgram.Router, st qio.
 }
 
 func (s *Server) serveFlow(ctx context.Context, kind wire.FlowKind, target wire.Target, client *pipe, router *dgram.Router, streamID uint64, clientInitiated bool) {
+	defer client.Close()
 	if !s.flows.acquire() {
 		_ = wire.WriteSetupResult(client, wire.SetupFlowLimit)
 		_ = client.Close()
@@ -670,20 +673,29 @@ func relayQUICUDP(router *dgram.Router, id uint32, client *pipe, udp net.Conn, u
 	for {
 		select {
 		case <-done:
+			_ = udp.Close()
 			wg.Wait()
 			// The reliable control stream owns the route. CLOSE above is only
 			// a hint; FIN is what lets the peer drop it.
 			_ = client.CloseWrite()
 			return
+		case <-flow.Done():
+			_ = udp.Close()
+			wg.Wait()
+			_ = client.CloseWrite()
+			return
 		case pkt, ok := <-flow.C:
 			if !ok {
+				_ = udp.Close()
 				wg.Wait()
 				_ = client.CloseWrite()
 				return
 			}
 			_ = up.WaitN(context.Background(), len(pkt))
+			_ = udp.SetWriteDeadline(time.Now().Add(idle))
 			if _, err := udp.Write(pkt); err != nil {
 				finish()
+				_ = udp.Close()
 				wg.Wait()
 				_ = client.CloseWrite()
 				return
@@ -731,7 +743,10 @@ func bridgeUoT(tls *pipe, router *dgram.Router, id uint32, quic *pipe, up, down 
 		_, _ = quic.Read(b[:])
 		finish()
 	}()
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			pkt, err := wire.ReadUoT(tls)
 			if err != nil {
@@ -752,12 +767,19 @@ func bridgeUoT(tls *pipe, router *dgram.Router, id uint32, quic *pipe, up, down 
 	for {
 		select {
 		case <-done:
-			_ = tls.CloseWrite()
+			_ = tls.Close()
+			wg.Wait()
+			_ = quic.CloseWrite()
+			return
+		case <-flow.Done():
+			_ = tls.Close()
+			wg.Wait()
 			_ = quic.CloseWrite()
 			return
 		case pkt, ok := <-flow.C:
 			if !ok {
-				_ = tls.CloseWrite()
+				_ = tls.Close()
+				wg.Wait()
 				_ = quic.CloseWrite()
 				return
 			}
@@ -768,7 +790,8 @@ func bridgeUoT(tls *pipe, router *dgram.Router, id uint32, quic *pipe, up, down 
 			_ = lim.WaitN(context.Background(), len(pkt))
 			if err := wire.WriteUoT(tls, pkt); err != nil {
 				finish()
-				_ = tls.CloseWrite()
+				_ = tls.Close()
+				wg.Wait()
 				_ = quic.CloseWrite()
 				return
 			}
@@ -797,6 +820,14 @@ func bridgeUDP(from *dgram.Router, fromID uint32, fromCtl *pipe, to *dgram.Route
 	for {
 		select {
 		case <-done:
+			_ = fromCtl.CloseWrite()
+			_ = toCtl.CloseWrite()
+			return
+		case <-left.Done():
+			_ = fromCtl.CloseWrite()
+			_ = toCtl.CloseWrite()
+			return
+		case <-right.Done():
 			_ = fromCtl.CloseWrite()
 			_ = toCtl.CloseWrite()
 			return
@@ -915,7 +946,9 @@ func (a *admit) release(addr net.Addr) {
 	if a.n > 0 {
 		a.n--
 	}
-	if a.per[key] > 0 {
+	if a.per[key] <= 1 {
+		delete(a.per, key)
+	} else {
 		a.per[key]--
 	}
 	if a.cond != nil {

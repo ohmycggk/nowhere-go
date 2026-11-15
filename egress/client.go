@@ -232,6 +232,7 @@ func (s *session) tlsOnce(ctx context.Context) int {
 		_ = tlsConn.Close()
 		return 0
 	}
+	defer tlsConn.Close()
 	s.serveOne(ctx, &pipe{Reader: br, write: tlsConn, closer: tlsConn}, nil, kind, target, 1, true)
 	return 2
 }
@@ -332,6 +333,7 @@ func (s *session) serveStream(ctx context.Context, router *dgram.Router, st qio.
 }
 
 func (s *session) serveOne(ctx context.Context, client *pipe, router *dgram.Router, kind wire.FlowKind, target wire.Target, streamID uint64, server bool) {
+	defer client.Close()
 	// A UDP flow over this QUIC carrier needs DATAGRAM support. Reject it
 	// before the target dial and before READY; Core forbids a fallback.
 	if kind == wire.FlowUDP && router != nil && router.MaxDatagramSize() <= 0 {
@@ -421,7 +423,12 @@ type pipe struct {
 
 func (p *pipe) Read(b []byte) (int, error)  { return p.Reader.Read(b) }
 func (p *pipe) Write(b []byte) (int, error) { return p.write.Write(b) }
-func (p *pipe) Close() error                { return p.closer.Close() }
+func (p *pipe) Close() error {
+	if p.closer != nil {
+		return p.closer.Close()
+	}
+	return nil
+}
 func (p *pipe) CloseWrite() error {
 	if cw, ok := p.write.(interface{ CloseWrite() error }); ok {
 		return cw.CloseWrite()
@@ -476,7 +483,10 @@ func relayQUIC(router *dgram.Router, id uint32, client *pipe, udp net.Conn, up, 
 		_, _ = client.Read(b[:])
 		finish()
 	}()
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		buf := make([]byte, 65535)
 		for {
 			_ = udp.SetReadDeadline(time.Now().Add(idle))
@@ -495,16 +505,28 @@ func relayQUIC(router *dgram.Router, id uint32, client *pipe, udp net.Conn, up, 
 	for {
 		select {
 		case <-done:
+			_ = udp.Close()
+			wg.Wait()
+			_ = client.CloseWrite()
+			return
+		case <-flow.Done():
+			_ = udp.Close()
+			wg.Wait()
 			_ = client.CloseWrite()
 			return
 		case pkt, ok := <-flow.C:
 			if !ok {
+				_ = udp.Close()
+				wg.Wait()
 				_ = client.CloseWrite()
 				return
 			}
 			_ = up.WaitN(context.Background(), len(pkt))
+			_ = udp.SetWriteDeadline(time.Now().Add(idle))
 			if _, err := udp.Write(pkt); err != nil {
 				finish()
+				_ = udp.Close()
+				wg.Wait()
 				_ = client.CloseWrite()
 				return
 			}

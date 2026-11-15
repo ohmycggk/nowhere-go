@@ -31,6 +31,14 @@ func (f *Flow) Close() {
 	f.once.Do(func() { close(f.closed) })
 }
 
+// Done returns a channel that is closed when the flow is closed.
+func (f *Flow) Done() <-chan struct{} {
+	if f == nil {
+		return nil
+	}
+	return f.closed
+}
+
 // Router demultiplexes datagrams on one QUIC connection.
 type Router struct {
 	conn     qio.Conn
