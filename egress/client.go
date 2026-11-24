@@ -16,6 +16,8 @@ import (
 
 	"github.com/ohmycggk/nowhere-go/dgram"
 	"github.com/ohmycggk/nowhere-go/flowio"
+	"github.com/ohmycggk/nowhere-go/internal/bufpool"
+	"github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/qio"
 	"github.com/ohmycggk/nowhere-go/runtime"
 	"github.com/ohmycggk/nowhere-go/wire"
@@ -25,13 +27,14 @@ const keepalive = 15 * time.Second
 
 // Config is one Egress process. Set DialQUIC or DialTCP, not both.
 type Config struct {
-	SharedKey  string
-	Morph      bool
-	PortalAddr string
-	TLS        *tls.Config
-	DialTCP    func(ctx context.Context, addr string) (net.Conn, error)
-	DialQUIC   func(ctx context.Context) (qio.Conn, error)
-	Upstream   interface {
+	SharedKey   string
+	Morph       bool
+	MorphCipher morph.Cipher
+	PortalAddr  string
+	TLS         *tls.Config
+	DialTCP     func(ctx context.Context, addr string) (net.Conn, error)
+	DialQUIC    func(ctx context.Context) (qio.Conn, error)
+	Upstream    interface {
 		DialTCP(ctx context.Context, target wire.Target) (net.Conn, error)
 		DialUDP(ctx context.Context, target wire.Target) (net.Conn, error)
 	}
@@ -51,6 +54,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := wire.ValidateServiceKey(cfg.SharedKey); err != nil {
 		return err
 	}
+	if !cfg.MorphCipher.Valid() {
+		return errors.New("cipher must be chacha or aes")
+	}
 	if cfg.Upstream == nil {
 		return errors.New("nw3: egress requires an upstream")
 	}
@@ -69,12 +75,20 @@ func Run(ctx context.Context, cfg Config) error {
 		if cfg.TLS == nil {
 			return errors.New("nw3: egress TLS carrier requires a TLS config")
 		}
+		var keys *morph.Keys
+		if cfg.Morph {
+			k, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+			if err != nil {
+				return err
+			}
+			keys = &k
+		}
 		tlsCfg := cfg.TLS.Clone()
 		tlsCfg.MinVersion = tls.VersionTLS13
 		tlsCfg.MaxVersion = tls.VersionTLS13
 		tlsCfg.NextProtos = []string{wire.ALPN}
 		cfg.TLS = tlsCfg
-		return runTLS(ctx, cfg, creds, rt)
+		return runTLS(ctx, cfg, creds, rt, keys)
 	}
 	return runQUIC(ctx, cfg, creds, rt)
 }
@@ -82,6 +96,7 @@ func Run(ctx context.Context, cfg Config) error {
 type session struct {
 	cfg   Config
 	creds *wire.Credentials
+	keys  *morph.Keys
 	rt    runtime.Settings
 	up    *flowio.Limiter
 	down  *flowio.Limiter
@@ -99,8 +114,9 @@ func newSession(cfg Config, creds *wire.Credentials, rt runtime.Settings) *sessi
 // with one seed and adds up to two replacements when a standby connection
 // receives FlowStart. Failures do not grow the pool. At zero it restores one
 // seed after the service cooldown.
-func runTLS(ctx context.Context, cfg Config, creds *wire.Credentials, rt runtime.Settings) error {
+func runTLS(ctx context.Context, cfg Config, creds *wire.Credentials, rt runtime.Settings, keys *morph.Keys) error {
 	s := newSession(cfg, creds, rt)
+	s.keys = keys
 	var mu sync.Mutex
 	budget := 0
 	wake := make(chan struct{}, 1)
@@ -173,26 +189,60 @@ func (s *session) tlsOnce(ctx context.Context) int {
 		conn net.Conn
 		err  error
 	}
+	var dialMu sync.Mutex
+	var dialAbandoned bool
 	dialed := make(chan dialResult, 1)
 	go func() {
 		conn, err := s.cfg.DialTCP(dialCtx, s.cfg.PortalAddr)
+		dialMu.Lock()
+		if dialAbandoned {
+			dialMu.Unlock()
+			if conn != nil {
+				_ = conn.Close()
+			}
+			return
+		}
 		dialed <- dialResult{conn, err}
+		dialMu.Unlock()
 	}()
 	var raw net.Conn
 	select {
 	case <-dialCtx.Done():
 		cancel()
+		dialMu.Lock()
+		dialAbandoned = true
+		select {
+		case got := <-dialed:
+			dialMu.Unlock()
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
+		default:
+			dialMu.Unlock()
+		}
 		s.cool(ctx)
 		return 0
 	case got := <-dialed:
 		cancel()
 		if got.err != nil {
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
 			s.cool(ctx)
 			return 0
 		}
 		raw = got.conn
 	}
 	enableKeepalive(raw)
+	if s.keys != nil {
+		wrapped, wrapErr := morph.WrapTCPClient(raw, *s.keys)
+		if wrapErr != nil {
+			_ = raw.Close()
+			s.cool(ctx)
+			return 0
+		}
+		raw = wrapped
+	}
 	tlsConn := tls.Client(raw, s.cfg.TLS)
 	_ = tlsConn.SetDeadline(time.Now().Add(s.rt.HandshakeTimeout))
 	err := tlsConn.Handshake()
@@ -370,7 +420,7 @@ func (s *session) serveOne(ctx context.Context, client *pipe, router *dgram.Rout
 		return
 	}
 	if kind == wire.FlowTCP {
-		flowio.Relay(client, peer, s.up, s.down)
+		flowio.RelaySize(client, peer, s.up, s.down, s.rt.TCPDataBuf)
 		return
 	}
 	if router == nil {
@@ -441,8 +491,10 @@ func relayUoT(client *pipe, udp net.Conn, up, down *flowio.Limiter, idle time.Du
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
 		for {
-			pkt, err := wire.ReadUoT(client)
+			pkt, err := wire.ReadUoTInto(client, *bp)
 			if err != nil {
 				break
 			}
@@ -455,7 +507,9 @@ func relayUoT(client *pipe, udp net.Conn, up, down *flowio.Limiter, idle time.Du
 	}()
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 65535)
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
+		buf := *bp
 		for {
 			_ = udp.SetReadDeadline(time.Now().Add(idle))
 			n, err := udp.Read(buf)
@@ -487,7 +541,9 @@ func relayQUIC(router *dgram.Router, id uint32, client *pipe, udp net.Conn, up, 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 65535)
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
+		buf := *bp
 		for {
 			_ = udp.SetReadDeadline(time.Now().Add(idle))
 			n, err := udp.Read(buf)

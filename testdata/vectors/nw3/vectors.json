@@ -1,7 +1,7 @@
 {
   "protocol": "nw3",
-  "upstream_version": "3.3.0",
-  "upstream_commit": "000007b2482b8acf3a609888921fd847cad56c33",
+  "upstream_version": "3.4.0",
+  "upstream_commit": "000001c866b0c9fada350c84bdc11702473564a6",
   "upstream_path": "Nowhere/src/tests/protocol/vectors.json",
   "exporter_version": "nowhere-vector-export/5",
   "shared_key_text": "0123456789abcdef0123456789abcdef",

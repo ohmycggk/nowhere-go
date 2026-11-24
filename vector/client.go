@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohmycggk/nowhere-go/dgram"
 	"github.com/ohmycggk/nowhere-go/flowio"
+	"github.com/ohmycggk/nowhere-go/internal/bufpool"
 	"github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/qio"
 	"github.com/ohmycggk/nowhere-go/runtime"
@@ -25,6 +26,7 @@ import (
 type Config struct {
 	SharedKey    string
 	Morph        bool
+	MorphCipher  morph.Cipher
 	PortalAddr   string
 	TLS          *tls.Config
 	DialTCP      func(ctx context.Context, addr string) (net.Conn, error)
@@ -41,6 +43,7 @@ type Client struct {
 	creds    *wire.Credentials
 	keys     *morph.Keys
 	cfg      Config
+	rt       runtime.Settings
 	up       *flowio.Limiter
 	down     *flowio.Limiter
 	mu       sync.Mutex
@@ -58,7 +61,14 @@ func New(cfg Config) (*Client, error) {
 	if err := wire.ValidateServiceKey(cfg.SharedKey); err != nil {
 		return nil, err
 	}
+	if !cfg.MorphCipher.Valid() {
+		return nil, errors.New("cipher must be chacha or aes")
+	}
 	creds, err := wire.NewCredentials(cfg.SharedKey)
+	if err != nil {
+		return nil, err
+	}
+	rt, err := runtime.Load(cfg.SharedKey, false)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +79,12 @@ func New(cfg Config) (*Client, error) {
 	} else if cfg.DialTCP == nil || cfg.TLS == nil {
 		return nil, errors.New("nw3: vector requires exactly one carrier")
 	}
-	c := &Client{creds: creds, cfg: cfg, up: flowio.NewMbps(cfg.UploadMbps), down: flowio.NewMbps(cfg.DownloadMbps)}
+	c := &Client{creds: creds, cfg: cfg, rt: rt, up: flowio.NewMbps(cfg.UploadMbps), down: flowio.NewMbps(cfg.DownloadMbps)}
 	if cfg.Morph {
-		keys := morph.Derive([]byte(cfg.SharedKey))
+		keys, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+		if err != nil {
+			return nil, err
+		}
 		c.keys = &keys
 	}
 	if cfg.TLS != nil {
@@ -335,7 +348,7 @@ func (c *Client) session(ctx context.Context) (qio.Conn, *dgram.Router, error) {
 		return nil, nil, errors.New("nw3: QUIC handshake rejected")
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	router := dgram.NewRouter(conn, 0)
+	router := dgram.NewRouter(conn, c.rt.QUICUDPQueue)
 	router.SetOverhead(c.cfg.DatagramOverhead)
 	go router.Run(runCtx)
 	c.quic = conn
@@ -406,7 +419,9 @@ func (c *limitedConn) Write(p []byte) (int, error) {
 type uotConn struct{ net.Conn }
 
 func (c *uotConn) Read(p []byte) (int, error) {
-	pkt, err := wire.ReadUoT(c.Conn)
+	bp := bufpool.GetUDP()
+	defer bufpool.PutUDP(bp)
+	pkt, err := wire.ReadUoTInto(c.Conn, *bp)
 	if err != nil {
 		return 0, err
 	}

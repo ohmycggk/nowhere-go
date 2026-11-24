@@ -21,6 +21,13 @@ type Flow struct {
 	C      chan []byte
 	closed chan struct{}
 	once   sync.Once
+
+	// Ring of queued payload sizes tracked under Router.mu so the connection-wide
+	// byte budget stays exact even when callers read directly from C.
+	sizes       [queueLen]int
+	head        int
+	count       int
+	queuedBytes int
 }
 
 // Close unblocks receivers.
@@ -41,24 +48,28 @@ func (f *Flow) Done() <-chan struct{} {
 
 // Router demultiplexes datagrams on one QUIC connection.
 type Router struct {
-	conn     qio.Conn
-	overhead int
-	mu       sync.Mutex
-	tab      map[uint32]*Flow
-	re       *wire.Reassembler
-	pkt      atomic.Uint32
+	conn        qio.Conn
+	overhead    int
+	maxBytes    int
+	queuedBytes int
+	mu          sync.Mutex
+	tab         map[uint32]*Flow
+	re          *wire.Reassembler
+	pkt         atomic.Uint32
 }
 
-// NewRouter returns a router whose reassembly reservation is maxBytes.
-// Zero uses the 4 MiB default. Call Run to start the receive loop.
+// NewRouter returns a router whose connection-wide UDP queue and reassembly
+// budget is maxBytes. Zero uses the 4 MiB default. Call Run to start the
+// receive loop.
 func NewRouter(conn qio.Conn, maxBytes int) *Router {
 	if maxBytes <= 0 {
 		maxBytes = 4 << 20
 	}
 	return &Router{
-		conn: conn,
-		tab:  map[uint32]*Flow{},
-		re:   wire.NewReassembler(64, maxBytes, 0),
+		conn:     conn,
+		maxBytes: maxBytes,
+		tab:      map[uint32]*Flow{},
+		re:       wire.NewReassembler(64, maxBytes, 0),
 	}
 }
 
@@ -78,11 +89,16 @@ func (r *Router) SetOverhead(n int) {
 func (r *Router) Register(id uint32) *Flow {
 	f := &Flow{ID: id, C: make(chan []byte, queueLen), closed: make(chan struct{})}
 	r.mu.Lock()
-	if old := r.tab[id]; old != nil {
-		old.Close()
+	old := r.tab[id]
+	if old != nil {
+		r.releaseFlowLocked(old)
 	}
 	r.tab[id] = f
 	r.mu.Unlock()
+	if old != nil {
+		old.Close()
+		drainFlow(old)
+	}
 	return f
 }
 
@@ -91,11 +107,15 @@ func (r *Router) Unregister(id uint32) {
 	r.mu.Lock()
 	f := r.tab[id]
 	delete(r.tab, id)
+	if f != nil {
+		r.releaseFlowLocked(f)
+	}
+	r.re.RemoveFlow(id)
 	r.mu.Unlock()
 	if f != nil {
 		f.Close()
+		drainFlow(f)
 	}
-	r.re.RemoveFlow(id)
 }
 
 // MaxDatagramSize reports the peer's DATAGRAM payload limit for this
@@ -141,6 +161,7 @@ func (r *Router) CloseFlow(id uint32) {
 
 // Run reads datagrams until ctx ends or the connection fails.
 func (r *Router) Run(ctx context.Context) {
+	defer r.cleanupOnExit()
 	for {
 		buf, err := r.conn.ReceiveDatagram(ctx)
 		if err != nil {
@@ -152,14 +173,20 @@ func (r *Router) Run(ctx context.Context) {
 		}
 		switch d.Type {
 		case 0:
+			// Copy payload out of buf because qio.Conn.ReceiveDatagram does not
+			// guarantee that a host implementation will not reuse its buffer.
 			r.deliver(d.FlowID, append([]byte(nil), d.Payload...))
 		case 1:
 			// An unknown or not-yet-ready flow must not take a reassembly
 			// slot. The control stream installs the route before READY.
-			if !r.known(d.FlowID) {
+			r.mu.Lock()
+			_, ok := r.tab[d.FlowID]
+			if !ok {
+				r.mu.Unlock()
 				continue
 			}
 			pkt, err := r.re.Push(d, time.Now())
+			r.mu.Unlock()
 			if err != nil || pkt == nil {
 				continue
 			}
@@ -167,6 +194,21 @@ func (r *Router) Run(ctx context.Context) {
 		case 2:
 			// CLOSE is auxiliary. The control stream owns lifetime.
 		}
+	}
+}
+
+func (r *Router) cleanupOnExit() {
+	r.mu.Lock()
+	flows := make([]*Flow, 0, len(r.tab))
+	for id, f := range r.tab {
+		r.releaseFlowLocked(f)
+		flows = append(flows, f)
+		delete(r.tab, id)
+	}
+	r.re.Clear()
+	r.mu.Unlock()
+	for _, f := range flows {
+		f.Close()
 	}
 }
 
@@ -179,15 +221,85 @@ func (r *Router) known(id uint32) bool {
 
 func (r *Router) deliver(id uint32, payload []byte) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	f := r.tab[id]
-	r.mu.Unlock()
 	if f == nil {
 		return
+	}
+	r.reconcileFlowLocked(f)
+	sz := len(payload)
+	if r.queuedBytes+sz > r.maxBytes {
+		for _, other := range r.tab {
+			if other != f {
+				r.reconcileFlowLocked(other)
+			}
+		}
+		if r.queuedBytes+sz > r.maxBytes {
+			return
+		}
 	}
 	select {
 	case <-f.closed:
 	case f.C <- payload:
+		if f.count == queueLen {
+			// A consumer dequeued an item between reconcileFlowLocked and send.
+			old := f.sizes[f.head]
+			f.sizes[f.head] = 0
+			f.head = (f.head + 1) % queueLen
+			f.count--
+			f.queuedBytes -= old
+			r.queuedBytes -= old
+			if f.queuedBytes < 0 {
+				f.queuedBytes = 0
+			}
+			if r.queuedBytes < 0 {
+				r.queuedBytes = 0
+			}
+		}
+		tail := (f.head + f.count) % queueLen
+		f.sizes[tail] = sz
+		f.count++
+		f.queuedBytes += sz
+		r.queuedBytes += sz
 	default:
+	}
+}
+
+func (r *Router) reconcileFlowLocked(f *Flow) {
+	inChan := len(f.C)
+	for f.count > inChan {
+		sz := f.sizes[f.head]
+		f.sizes[f.head] = 0
+		f.head = (f.head + 1) % queueLen
+		f.count--
+		f.queuedBytes -= sz
+		r.queuedBytes -= sz
+	}
+	if f.queuedBytes < 0 {
+		f.queuedBytes = 0
+	}
+	if r.queuedBytes < 0 {
+		r.queuedBytes = 0
+	}
+}
+
+func (r *Router) releaseFlowLocked(f *Flow) {
+	r.queuedBytes -= f.queuedBytes
+	if r.queuedBytes < 0 {
+		r.queuedBytes = 0
+	}
+	f.queuedBytes = 0
+	f.count = 0
+	f.head = 0
+}
+
+func drainFlow(f *Flow) {
+	for {
+		select {
+		case <-f.C:
+		default:
+			return
+		}
 	}
 }
 

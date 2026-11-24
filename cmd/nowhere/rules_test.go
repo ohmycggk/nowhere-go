@@ -101,6 +101,14 @@ func TestFingerprintShareLinkRejections(t *testing.T) {
 		err.Error() != "Nowhere share-link carrier paths support only tcp and udp" {
 		t.Fatalf("r4 suffix = %v", err)
 	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?morph=0&cipher=AES"); err == nil ||
+		err.Error() != "cipher must be chacha or aes" {
+		t.Fatalf("invalid cipher = %v", err)
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?net=quic&morph=1"); err == nil ||
+		err.Error() != "share link net must be tcp or udp" {
+		t.Fatalf("invalid net = %v", err)
+	}
 }
 
 func TestParseProbeTarget(t *testing.T) {

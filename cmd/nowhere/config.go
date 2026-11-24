@@ -5,7 +5,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
@@ -42,6 +44,7 @@ type nw3Config struct {
 	sni       string
 	pin       string
 	morph     bool
+	cipher    morph.Cipher
 	log       logLevel
 	dial      dialPolicy
 	rate      int
@@ -65,9 +68,8 @@ func urlEdition(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported URL scheme")
 	}
-	q := u.Query()
-	nw2 := hasQuery(q, "up", "down", "mux", "next", "socks")
-	nw3 := hasQuery(q, "in", "out", "rate", "etar")
+	nw2 := hasLiteralQuery(u.RawQuery, "up", "down", "mux", "next", "socks")
+	nw3 := hasLiteralQuery(u.RawQuery, "in", "out", "rate", "etar", "cipher")
 	if nw2 && nw3 {
 		return "", fmt.Errorf("nw2 and nw3 options cannot be combined")
 	}
@@ -77,13 +79,100 @@ func urlEdition(raw string) (string, error) {
 	return "nw3", nil
 }
 
-func hasQuery(q url.Values, names ...string) bool {
-	for _, name := range names {
-		if _, ok := q[name]; ok {
-			return true
+func hasLiteralQuery(rawQuery string, names ...string) bool {
+	if rawQuery == "" {
+		return false
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		rawKey, _, _ := strings.Cut(pair, "=")
+		for _, name := range names {
+			if rawKey == name {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// parseNW3Query mirrors Nowhere 3.4's query_first: query keys are matched
+// literally without percent-decoding, the first occurrence of a recognized key
+// wins (later duplicates are ignored even if malformed), and recognized values
+// are strictly percent-decoded as UTF-8.
+func parseNW3Query(rawQuery string, allowed ...string) (map[string]string, error) {
+	values := make(map[string]string, len(allowed))
+	if rawQuery == "" {
+		return values, nil
+	}
+	allow := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allow[name] = struct{}{}
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		rawKey, rawValue, _ := strings.Cut(pair, "=")
+		if _, ok := allow[rawKey]; !ok {
+			continue
+		}
+		if _, seen := values[rawKey]; seen {
+			continue
+		}
+		decoded, err := decodeQueryComponent(rawValue, "query value")
+		if err != nil {
+			return nil, err
+		}
+		values[rawKey] = decoded
+	}
+	return values, nil
+}
+
+func firstRawNW3QueryValue(rawQuery, name string) (string, bool) {
+	if rawQuery == "" {
+		return "", false
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		rawKey, rawValue, _ := strings.Cut(pair, "=")
+		if rawKey == name {
+			return rawValue, true
+		}
+	}
+	return "", false
+}
+
+func decodeQueryComponent(raw, name string) (string, error) {
+	out := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); {
+		if raw[i] == '%' {
+			if i+2 >= len(raw) {
+				return "", fmt.Errorf("invalid percent encoding in %s", name)
+			}
+			hi, ok1 := fromHexDigit(raw[i+1])
+			lo, ok2 := fromHexDigit(raw[i+2])
+			if !ok1 || !ok2 {
+				return "", fmt.Errorf("invalid percent encoding in %s", name)
+			}
+			out = append(out, (hi<<4)|lo)
+			i += 3
+		} else {
+			out = append(out, raw[i])
+			i++
+		}
+	}
+	if !utf8.Valid(out) {
+		return "", fmt.Errorf("invalid UTF-8 in %s", name)
+	}
+	return string(out), nil
+}
+
+func fromHexDigit(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10, true
+	case b >= 'A' && b <= 'F':
+		return b - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
@@ -124,13 +213,22 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 	if err := normalizeNW3Endpoint(&cfg); err != nil {
 		return nw3Config{}, err
 	}
-	q := u.Query()
+	var allowed []string
+	switch cfg.kind {
+	case nw3Portal:
+		allowed = []string{"tls", "crt", "key", "rate", "etar", "dial", "dial4", "dial6", "morph", "cipher", "out", "log"}
+	case nw3Vector:
+		allowed = []string{"in", "sni", "pin", "rate", "etar", "morph", "cipher", "log", "crt", "key"}
+	case nw3Egress:
+		allowed = []string{"sni", "pin", "morph", "cipher", "dial", "dial4", "dial6", "rate", "etar", "log", "crt", "key"}
+	}
+	q, err := parseNW3Query(u.RawQuery, allowed...)
+	if err != nil {
+		return nw3Config{}, err
+	}
 	first := func(name string) (string, bool) {
-		vs, ok := q[name]
-		if !ok || len(vs) == 0 {
-			return "", false
-		}
-		return vs[0], true
+		v, ok := q[name]
+		return v, ok
 	}
 	if v, ok := first("tls"); ok {
 		mode, err := strconv.Atoi(v)
@@ -147,6 +245,13 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 	}
 	if cfg.tlsMode == 2 && (cfg.certPath == "" || cfg.keyPath == "") {
 		return nw3Config{}, fmt.Errorf("tls=2 requires crt and key")
+	}
+	if v, ok := first("cipher"); ok {
+		cipher, err := morph.ParseCipher(v)
+		if err != nil {
+			return nw3Config{}, err
+		}
+		cfg.cipher = cipher
 	}
 	if v, ok := first("morph"); ok {
 		switch v {
@@ -174,7 +279,13 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 	if _, err := parsePin(cfg.pin); err != nil {
 		return nw3Config{}, err
 	}
-	cfg.dial, err = parseDialPolicy(q)
+	dialVals := url.Values{}
+	for _, name := range []string{"dial", "dial4", "dial6"} {
+		if v, ok := first(name); ok {
+			dialVals.Set(name, v)
+		}
+	}
+	cfg.dial, err = parseDialPolicy(dialVals)
 	if err != nil {
 		return nw3Config{}, err
 	}
@@ -191,7 +302,8 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 		}
 	}
 	if v, ok := first("in"); ok && v != "" {
-		user, pass, addr, err := parseSocksEndpoint(v)
+		rawIn, _ := firstRawNW3QueryValue(u.RawQuery, "in")
+		user, pass, addr, err := parseSocksEndpoint(rawIn)
 		if err != nil {
 			return nw3Config{}, err
 		}
@@ -201,7 +313,8 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 		if v == "egress" {
 			cfg.exit = nw3ExitEgress
 		} else {
-			user, pass, addr, err := parseSocksEndpoint(v)
+			rawOut, _ := firstRawNW3QueryValue(u.RawQuery, "out")
+			user, pass, addr, err := parseSocksEndpoint(rawOut)
 			if err != nil {
 				return nw3Config{}, fmt.Errorf("out: %w", err)
 			}

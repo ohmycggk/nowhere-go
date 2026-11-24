@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-
-	"github.com/ohmycggk/nowhere-go/internal/chacha20"
 )
 
 const (
@@ -81,17 +79,18 @@ func (c *tcpConn) readClientHello() ([]byte, error) {
 
 func (c *tcpConn) readPlainUntil(buf []byte, n int) ([]byte, error) {
 	for len(buf) < n {
-		if err := checkLimit(c.readOff, n-len(buf)); err != nil {
-			return nil, err
+		need := n - len(buf)
+		if c.readCipher.remaining(c.readOff) < uint64(need) {
+			return nil, c.readCipher.exhaustedErr()
 		}
-		next := make([]byte, n-len(buf))
+		next := make([]byte, need)
 		if _, err := io.ReadFull(c.Conn, next); err != nil {
 			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 				return nil, ErrClientHello
 			}
 			return nil, err
 		}
-		chacha20.XORKeyStreamAt(next, next, &c.readKey, &c.nonce, c.readOff)
+		c.readCipher.xorKeyStream(next, next)
 		c.readOff += uint64(len(next))
 		buf = append(buf, next...)
 	}

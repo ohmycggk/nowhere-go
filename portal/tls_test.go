@@ -17,13 +17,23 @@ import (
 	"time"
 
 	"github.com/ohmycggk/nowhere-go/egress"
+	"github.com/ohmycggk/nowhere-go/morph"
+	"github.com/ohmycggk/nowhere-go/runtime"
 	"github.com/ohmycggk/nowhere-go/vector"
 	"github.com/ohmycggk/nowhere-go/wire"
 )
 
 func TestTLSEcho(t *testing.T) {
-	for _, morph := range []bool{false, true} {
-		t.Run(map[bool]string{false: "plain", true: "morph"}[morph], func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		morph  bool
+		cipher morph.Cipher
+	}{
+		{name: "plain", morph: false, cipher: morph.CipherChaCha},
+		{name: "morph_chacha", morph: true, cipher: morph.CipherChaCha},
+		{name: "morph_aes", morph: true, cipher: morph.CipherAES},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			echo := echoServer(t)
 			cert := testCert(t)
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -33,8 +43,9 @@ func TestTLSEcho(t *testing.T) {
 			defer ln.Close()
 			key := "0123456789abcdef0123456789abcdef"
 			srv, err := New(Config{
-				SharedKey: key,
-				Morph:     morph,
+				SharedKey:   key,
+				Morph:       tc.morph,
+				MorphCipher: tc.cipher,
 				TLS: &tls.Config{
 					Certificates: []tls.Certificate{cert},
 				},
@@ -51,9 +62,10 @@ func TestTLSEcho(t *testing.T) {
 			go func() { _ = srv.Serve(ctx, ln) }()
 
 			client, err := vector.New(vector.Config{
-				SharedKey:  key,
-				Morph:      morph,
-				PortalAddr: ln.Addr().String(),
+				SharedKey:   key,
+				Morph:       tc.morph,
+				MorphCipher: tc.cipher,
+				PortalAddr:  ln.Addr().String(),
 				TLS: &tls.Config{
 					InsecureSkipVerify: true,
 					ServerName:         "nowhere",
@@ -117,93 +129,176 @@ func TestTLSEcho(t *testing.T) {
 }
 
 func TestTLSEgressEcho(t *testing.T) {
-	echo := echoServer(t)
-	cert := testCert(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	key := "0123456789abcdef0123456789abcdef"
-	srv, err := New(Config{
-		SharedKey: key,
-		Egress:    true,
-		TLS:       &tls.Config{Certificates: []tls.Certificate{cert}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = srv.Serve(ctx, ln) }()
+	for _, tc := range []struct {
+		name   string
+		morph  bool
+		cipher morph.Cipher
+	}{
+		{name: "plain", morph: false, cipher: morph.CipherChaCha},
+		{name: "morph_chacha", morph: true, cipher: morph.CipherChaCha},
+		{name: "morph_aes", morph: true, cipher: morph.CipherAES},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			echo := echoServer(t)
+			cert := testCert(t)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			key := "0123456789abcdef0123456789abcdef"
+			srv, err := New(Config{
+				SharedKey:   key,
+				Morph:       tc.morph,
+				MorphCipher: tc.cipher,
+				Egress:      true,
+				TLS:         &tls.Config{Certificates: []tls.Certificate{cert}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = srv.Serve(ctx, ln) }()
 
-	egCtx, egCancel := context.WithCancel(context.Background())
-	defer egCancel()
-	egErr := make(chan error, 1)
-	go func() {
-		egErr <- egress.Run(egCtx, egress.Config{
-			SharedKey:  key,
-			PortalAddr: ln.Addr().String(),
-			TLS: &tls.Config{
-				InsecureSkipVerify: true,
-				ServerName:         "nowhere",
-			},
-			DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "tcp", addr)
-			},
-			Upstream: Direct{},
+			egCtx, egCancel := context.WithCancel(context.Background())
+			defer egCancel()
+			egErr := make(chan error, 1)
+			go func() {
+				egErr <- egress.Run(egCtx, egress.Config{
+					SharedKey:   key,
+					Morph:       tc.morph,
+					MorphCipher: tc.cipher,
+					PortalAddr:  ln.Addr().String(),
+					TLS: &tls.Config{
+						InsecureSkipVerify: true,
+						ServerName:         "nowhere",
+					},
+					DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+						var d net.Dialer
+						return d.DialContext(ctx, "tcp", addr)
+					},
+					Upstream: Direct{},
+				})
+			}()
+
+			client, err := vector.New(vector.Config{
+				SharedKey:   key,
+				Morph:       tc.morph,
+				MorphCipher: tc.cipher,
+				PortalAddr:  ln.Addr().String(),
+				TLS: &tls.Config{
+					InsecureSkipVerify: true,
+					ServerName:         "nowhere",
+				},
+				DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, "tcp", addr)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, port, _ := net.SplitHostPort(echo)
+			target, err := wire.NewIPTarget(netip.MustParseAddr(host), mustPort(t, port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var conn net.Conn
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				conn, err = client.OpenTCP(context.Background(), target)
+				if err == nil || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if err != nil {
+				select {
+				case e := <-egErr:
+					t.Fatalf("open: %v; egress: %v", err, e)
+				default:
+					t.Fatal(err)
+				}
+			}
+			defer conn.Close()
+			if _, err := conn.Write([]byte("ping")); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 4)
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				t.Fatal(err)
+			}
+			if string(buf) != "ping" {
+				t.Fatalf("got %q", buf)
+			}
 		})
-	}()
-
-	client, err := vector.New(vector.Config{
-		SharedKey:  key,
-		PortalAddr: ln.Addr().String(),
-		TLS: &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         "nowhere",
-		},
-		DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "tcp", addr)
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
+}
+
+func TestTLSCipherMismatchRejected(t *testing.T) {
+	t.Setenv(runtime.EnvHandshakeTimeout, "250ms")
+	echo := echoServer(t)
 	host, port, _ := net.SplitHostPort(echo)
 	target, err := wire.NewIPTarget(netip.MustParseAddr(host), mustPort(t, port))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var conn net.Conn
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		conn, err = client.OpenTCP(context.Background(), target)
-		if err == nil || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		select {
-		case e := <-egErr:
-			t.Fatalf("open: %v; egress: %v", err, e)
-		default:
-			t.Fatal(err)
-		}
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 4)
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatal(err)
-	}
-	if string(buf) != "ping" {
-		t.Fatalf("got %q", buf)
+	for _, tc := range []struct {
+		name         string
+		portalCipher morph.Cipher
+		vectorCipher morph.Cipher
+	}{
+		{name: "aes_vs_chacha", portalCipher: morph.CipherAES, vectorCipher: morph.CipherChaCha},
+		{name: "chacha_vs_aes", portalCipher: morph.CipherChaCha, vectorCipher: morph.CipherAES},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert := testCert(t)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			key := "0123456789abcdef0123456789abcdef"
+			srv, err := New(Config{
+				SharedKey:   key,
+				Morph:       true,
+				MorphCipher: tc.portalCipher,
+				TLS:         &tls.Config{Certificates: []tls.Certificate{cert}},
+				Upstream:    Direct{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = srv.Serve(ctx, ln) }()
+
+			client, err := vector.New(vector.Config{
+				SharedKey:   key,
+				Morph:       true,
+				MorphCipher: tc.vectorCipher,
+				PortalAddr:  ln.Addr().String(),
+				TLS: &tls.Config{
+					InsecureSkipVerify: true,
+					ServerName:         "nowhere",
+				},
+				DialTCP: func(ctx context.Context, addr string) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, "tcp", addr)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			flowCtx, cancelFlow := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelFlow()
+			if conn, err := client.OpenTCP(flowCtx, target); err == nil {
+				_ = conn.Close()
+				t.Fatalf("cipher mismatch %s unexpectedly opened flow", tc.name)
+			}
+		})
 	}
 }
 

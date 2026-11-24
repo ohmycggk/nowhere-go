@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -11,12 +12,20 @@ const (
 	udpHeaderLen         = 4
 	udpFragmentHeaderLen = 12
 	udpPacketMax         = 65535
+	uotFrameMax          = 2 + udpPacketMax
 
 	frameData      = 0
 	frameFragment  = 1
 	frameClose     = 2
 	frameTypeShift = 30
 )
+
+var uotWritePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, uotFrameMax)
+		return &b
+	},
+}
 
 // Datagram is one decoded QUIC UDP frame.
 type Datagram struct {
@@ -173,39 +182,55 @@ func validateFragment(index, count byte, total uint16, payload []byte) error {
 	return nil
 }
 
-// WriteUoT writes one length-prefixed UDP payload. Zero length is an empty datagram.
+// WriteUoT writes one length-prefixed UDP payload in a single Write call using
+// a pooled frame buffer. Zero length is an empty datagram.
 func WriteUoT(w io.Writer, payload []byte) error {
 	if len(payload) > udpPacketMax {
 		return errors.New("nw3: UDP payload too large")
 	}
-	var hdr [2]byte
-	binary.BigEndian.PutUint16(hdr[:], uint16(len(payload)))
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	bp := uotWritePool.Get().(*[]byte)
+	defer uotWritePool.Put(bp)
+	frame := (*bp)[:2+len(payload)]
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
+	copy(frame[2:], payload)
+	_, err := w.Write(frame)
 	return err
 }
 
-// ReadUoT reads one length-prefixed UDP payload.
+// ReadUoT reads one length-prefixed UDP payload into a newly allocated slice.
 // A clean EOF before the length ends the flow. EOF inside a frame is truncation.
 func ReadUoT(r io.Reader) ([]byte, error) {
+	return ReadUoTInto(r, nil)
+}
+
+// ReadUoTInto reads one length-prefixed UDP payload, reusing buf when its
+// capacity is large enough to avoid per-packet heap allocations.
+// A clean EOF before the length ends the flow. EOF inside a frame is truncation.
+func ReadUoTInto(r io.Reader, buf []byte) ([]byte, error) {
 	var hdr [2]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
 	}
 	n := int(binary.BigEndian.Uint16(hdr[:]))
-	buf := make([]byte, n)
 	if n == 0 {
-		return buf, nil
+		if buf == nil {
+			return []byte{}, nil
+		}
+		return buf[:0], nil
 	}
-	if _, err := io.ReadFull(r, buf); err != nil {
+	var out []byte
+	if cap(buf) >= n {
+		out = buf[:n]
+	} else {
+		out = make([]byte, n)
+	}
+	if _, err := io.ReadFull(r, out); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, err
 	}
-	return buf, nil
+	return out, nil
 }
 
 // Reassembler collects FRAGMENT frames. Slots are bounded.
@@ -330,6 +355,14 @@ func (r *Reassembler) RemoveFlow(flow uint32) {
 	if r.reserved < 0 {
 		r.reserved = 0
 	}
+}
+
+// Clear drops every partial packet held by the reassembler.
+func (r *Reassembler) Clear() {
+	for key := range r.slots {
+		delete(r.slots, key)
+	}
+	r.reserved = 0
 }
 
 func (r *Reassembler) drop(key reKey) {

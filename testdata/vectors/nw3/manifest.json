@@ -1,32 +1,37 @@
 {
   "protocol": "nowhere-v3",
-  "upstream_version": "3.3.0",
-  "upstream_commit": "000007b2482b8acf3a609888921fd847cad56c33",
+  "upstream_version": "3.4.0",
+  "upstream_commit": "000001c866b0c9fada350c84bdc11702473564a6",
   "exporter_version": "nowhere-vector-export/5",
   "sources": {
     "protocol_md": "Nowhere/docs/protocol.md",
+    "cipher_md": "Nowhere/docs/cipher.md",
     "rust_vectors": "Nowhere/src/tests/protocol/vectors.json",
     "rust_flow": "Nowhere/src/tests/protocol/flow.rs",
     "rust_request": "Nowhere/src/tests/protocol/request.rs",
     "rust_auth": "Nowhere/src/protocol/auth.rs",
-    "rust_morph": "Nowhere/src/transport/morph.rs + Nowhere/src/transport/morph/tcp.rs"
+    "rust_morph": "Nowhere/src/transport/morph.rs + Nowhere/src/transport/morph/cipher.rs + Nowhere/src/transport/morph/tcp.rs + Nowhere/src/transport/morph/udp.rs",
+    "rust_cipher_vectors": "Nowhere/src/tests/transport/morph/cipher.rs + Nowhere/src/tests/transport/morph/tcp.rs"
   },
   "files": [
     "vectors.json",
     "morph.json",
-    "prelude.json"
+    "prelude.json",
+    "cipher.json"
   ],
   "notes": [
     "nowhere-go/testdata/vectors/nw3 is the module-local nw3 conformance corpus",
     "vectors.json is a provenance-annotated export of Nowhere/src/tests/protocol/vectors.json at the pinned commit; the upstream blob is byte-identical modulo the four provenance keys",
-    "morph.json is derived from the wire contract: upstream ships no fixed Morph vectors, so these are computed with the documented HMAC-SHA256 schedule and pinned here",
+    "morph.json is derived from the wire contract: upstream ships no fixed Morph KDF vectors, so these are computed with the documented HMAC-SHA256 schedule and pinned here",
+    "cipher.json pins the fixed AES-128-CTR TCP and UDP interoperability vectors from Nowhere v3.4.0 src/tests/transport/morph/cipher.rs and tcp.rs",
     "UPSTREAM.lock vector_tree_sha256 is sha256-tree-v1 over this directory, mirroring UPSTREAM-nw2.lock over testdata/vectors",
     "complete wire hex tables must not be maintained by hand",
     "nw3 auth salt is SHA-256(\"nowhere/nw3/auth-root\"); role_key = HMAC(HMAC(salt, shared_key_text), role_info || 0x01); tag = HMAC-SHA256(role_key, transport || exporter)[0:16]",
     "FlowStart is one byte: bit 0 selects TCP (0) or UDP (1); senders MUST zero bits 1-7 and receivers MUST ignore them",
     "UDP flow id is (quic_stream_id >> 2) + 1 after direction checks, in [1, 2^30-1]",
     "setup result is a single byte (0..4); registration result is a single byte (0..1)",
-    "Morph TCP bootstrap is prelude[64] || nonce[12] with fade (default), full8 or low7 sender policy. A 3.3 Portal requires the authenticated prelude: a tag mismatch, counter 0, a replay, or a counter outside the window is rejected before ClientHello parsing. There is no unauthenticated fallback.",
+    "Morph TCP bootstrap is prelude[64] || nonce[12] with fade (default), full8 or low7 sender policy. A 3.4 Portal requires the authenticated prelude: a tag mismatch, counter 0, a replay, or a counter outside the window is rejected before ClientHello parsing. There is no unauthenticated fallback.",
+    "Morph supports ChaCha20-IETF (default, cipher=chacha, 2^38-64 B/direction TCP limit) and AES-128-CTR (cipher=aes, 2^48 B/direction TCP limit) selected out of band with no wire negotiation.",
     "fade samples A in [8,12] and B in [16,32], writes printable ASCII on [0,A), low7 on [A,B), full8 on [B,64), using rejection sampling to avoid modulo bias",
     "nw3 has no Mux"
   ]

@@ -1,0 +1,64 @@
+{
+  "protocol": "nw3",
+  "upstream_version": "3.4.0",
+  "upstream_commit": "000001c866b0c9fada350c84bdc11702473564a6",
+  "upstream_path": "Nowhere/src/tests/transport/morph/cipher.rs",
+  "exporter_version": "nowhere-vector-export/5",
+  "notes": [
+    "Exported from Nowhere v3.4.0 src/tests/transport/morph/cipher.rs and src/tests/transport/morph/tcp.rs.",
+    "AES-128-CTR TCP uses HMAC-SHA256(direction_key, nonce)[0:16] as AES key and 16 zero bytes as initial 128-bit big-endian counter, with a 2^48 byte per-direction limit.",
+    "AES-128-CTR UDP uses direction_key[0:16] directly and nonce || 0x00000000 as initial 128-bit big-endian counter."
+  ],
+  "shared_key_text": "0123456789abcdef0123456789abcdef",
+  "nonce_hex": "000102030405060708090a0b",
+  "tcp_cases": [
+    {
+      "id": "aes-tcp-c2s-offset-0",
+      "cipher": "aes",
+      "direction": "tcp_c2s",
+      "offset": 0,
+      "plain_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324",
+      "cipher_hex": "8e59faa695f33a1a5ffc8369938132d677a1536e730205de8b4767a560fd155b7ed13833e3"
+    },
+    {
+      "id": "aes-tcp-s2c-offset-0",
+      "cipher": "aes",
+      "direction": "tcp_s2c",
+      "offset": 0,
+      "plain_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324",
+      "cipher_hex": "17a4869bfb790fa12b676b42a6ad4f40f8eaff0566051e81313ca1a59486b0f766ba989ce2"
+    },
+    {
+      "id": "aes-tcp-c2s-high-offset",
+      "cipher": "aes",
+      "direction": "tcp_c2s",
+      "offset": 1099511627795,
+      "plain_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324",
+      "cipher_hex": "dda378cb6a89ab5e74c5081119eb5fe3a06c0ee6563feacd15afa86af9b77425f0519188a2"
+    },
+    {
+      "id": "aes-tcp-c2s-limit-boundary",
+      "cipher": "aes",
+      "direction": "tcp_c2s",
+      "offset": 281474976710648,
+      "plain_hex": "0001020304050607",
+      "cipher_hex": "8e053ffe0fc59c76"
+    }
+  ],
+  "udp_cases": [
+    {
+      "id": "aes-udp-c2s",
+      "cipher": "aes",
+      "direction": "udp_c2s",
+      "plain_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324",
+      "cipher_hex": "4378463322b3680c1d1ad62068c536c0fc5e1eac063187dcb2cf48d0ab609405aa9f4fea6b"
+    },
+    {
+      "id": "aes-udp-s2c",
+      "cipher": "aes",
+      "direction": "udp_s2c",
+      "plain_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324",
+      "cipher_hex": "2813cf0312ebdcc2beb4ff955b4667eb3ab282761d5d5ecc3b1b111d8531262cb6ea62744a"
+    }
+  ]
+}

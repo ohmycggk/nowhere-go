@@ -51,3 +51,41 @@ func TestUDPPreludeRequiredOnlyForMorphClient(t *testing.T) {
 		t.Fatal("invalid udp prelude accepted")
 	}
 }
+
+func TestTransportMemoryProfiles(t *testing.T) {
+	t.Setenv(EnvMemoryProfile, "sentinel")
+	if err := os.Unsetenv(EnvMemoryProfile); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load("0123456789abcdef0123456789abcdef", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mib = 1 << 20
+	if got.Profile != (Profile{Name: "throughput", Stream: 4 * mib, Connection: 32 * mib, Send: 32 * mib}) {
+		t.Fatalf("default profile = %+v", got.Profile)
+	}
+	for _, tc := range []struct {
+		name string
+		want Profile
+	}{
+		{name: "memory", want: Profile{Name: "memory", Stream: 4 * mib, Connection: 16 * mib, Send: 8 * mib}},
+		{name: "balanced", want: Profile{Name: "balanced", Stream: 4 * mib, Connection: 16 * mib, Send: 16 * mib}},
+		{name: "throughput", want: Profile{Name: "throughput", Stream: 4 * mib, Connection: 32 * mib, Send: 32 * mib}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvMemoryProfile, tc.name)
+			s, err := Load("0123456789abcdef0123456789abcdef", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Profile != tc.want {
+				t.Fatalf("profile %s = %+v, want %+v", tc.name, s.Profile, tc.want)
+			}
+		})
+	}
+	t.Setenv(EnvMemoryProfile, "fast")
+	if _, err := Load("0123456789abcdef0123456789abcdef", false); err == nil {
+		t.Fatal("invalid memory profile accepted")
+	}
+}

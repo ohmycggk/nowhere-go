@@ -45,12 +45,295 @@ func TestURLEdition(t *testing.T) {
 	if _, err := urlEdition("portal://" + key + "@127.0.0.1:2000?in=:1080&socks=:1080"); err == nil {
 		t.Fatal("mixed options accepted")
 	}
+	if _, err := urlEdition("vector://" + key + "@127.0.0.1:2000?up=tcp&cipher=aes&socks=:1080"); err == nil {
+		t.Fatal("nw2 and cipher mixed options accepted")
+	}
 	cfg, err := parseNW3("portal://"+key+"@127.0.0.1:2000", true)
-	if err != nil || !cfg.morph || cfg.endpoint.udp == nil {
+	if err != nil || !cfg.morph || cfg.cipher != morph.CipherChaCha || cfg.endpoint.udp == nil {
 		t.Fatalf("default nw3 portal %+v %v", cfg, err)
 	}
 	if len(mustServerALPN(t, cfg)) != 1 || mustServerALPN(t, cfg)[0] != nw3wire.ALPN {
 		t.Fatal("nw3 portal would advertise more than nw3")
+	}
+}
+
+func TestParseNW3CipherLiteralFirstDuplicateAndDisabledValidation(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	parse := func(query string) (nw3Config, error) {
+		return parseNW3("vector://"+key+"@127.0.0.1:2000?in=127.0.0.1:1080&"+query, true)
+	}
+	aesCfg, err := parse("%63ipher=chacha&cipher=%61es&cipher=%ZZ")
+	if err != nil {
+		t.Fatalf("literal cipher query failed: %v", err)
+	}
+	if !aesCfg.morph || aesCfg.cipher != morph.CipherAES {
+		t.Fatalf("got morph=%v cipher=%v, want true/aes", aesCfg.morph, aesCfg.cipher)
+	}
+	disabledCfg, err := parse("morph=0&cipher=aes")
+	if err != nil {
+		t.Fatalf("morph=0&cipher=aes failed: %v", err)
+	}
+	if disabledCfg.morph {
+		t.Fatal("morph=0 unexpectedly enabled morph")
+	}
+	for _, query := range []string{
+		"morph=0&cipher=AES",
+		"cipher",
+		"cipher=&cipher=aes",
+		"cipher=%FF",
+		"cipher=%ZZ",
+	} {
+		if _, err := parse(query); err == nil {
+			t.Fatalf("query %q unexpectedly accepted", query)
+		}
+	}
+	// Role-specific unknown options with invalid values or percent-encoding are ignored.
+	if _, err := parseNW3("portal://"+key+"@127.0.0.1:2000?in=%ZZ&pin=wrong&cipher=aes", true); err != nil {
+		t.Fatalf("portal rejected unknown options: %v", err)
+	}
+	if _, err := parseNW3("vector://"+key+"@127.0.0.1:2000?in=127.0.0.1:1080&out=%ZZ&dial=bad&cipher=aes", true); err != nil {
+		t.Fatalf("vector rejected unknown options: %v", err)
+	}
+	if _, err := parseNW3("egress://"+key+"@127.0.0.1:2000?in=%ZZ&out=%ZZ&cipher=aes", true); err != nil {
+		t.Fatalf("egress rejected unknown options: %v", err)
+	}
+}
+
+func TestMorphQUICAndEgressAESAndMismatch(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	cert := testLeaf(t)
+	aesKeys, err := morph.DeriveWithCipher([]byte(key), morph.CipherAES)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chachaKeys := morph.Derive([]byte(key))
+
+	// QUIC Portal with AES-128-CTR + QUIC Egress with AES-128-CTR.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	packet, err := morph.WrapPacketConn(pc, aesKeys, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv, err := portal.New(portal.Config{
+		SharedKey:        key,
+		Morph:            true,
+		MorphCipher:      morph.CipherAES,
+		TLS:              &tls.Config{Certificates: []tls.Certificate{cert}},
+		Egress:           true,
+		DatagramOverhead: nw3DatagramOverhead(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.ServeQUIC(ctx, ln) }()
+
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoLn.Close()
+	go func() {
+		for {
+			c, err := echoLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) { defer c.Close(); _, _ = io.Copy(c, c) }(c)
+		}
+	}()
+
+	dialWithKeys := func(keys morph.Keys) func(context.Context) (qio.Conn, error) {
+		return func(ctx context.Context) (qio.Conn, error) {
+			raw, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			wrapped, err := morph.WrapPacketConn(raw, keys, true)
+			if err != nil {
+				_ = raw.Close()
+				return nil, err
+			}
+			conn, err := dialNW3QUIC(ctx, wrapped, pc.LocalAddr().String(), &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "nowhere",
+				NextProtos:         []string{nw3wire.ALPN},
+			}, 0, testProfile(), true)
+			if err != nil {
+				_ = wrapped.Close()
+				return nil, err
+			}
+			return conn, nil
+		}
+	}
+
+	egCtx, egCancel := context.WithCancel(context.Background())
+	defer egCancel()
+	go func() {
+		_ = egress.Run(egCtx, egress.Config{
+			SharedKey:        key,
+			Morph:            true,
+			MorphCipher:      morph.CipherAES,
+			DialQUIC:         dialWithKeys(aesKeys),
+			Upstream:         portal.Direct{},
+			DatagramOverhead: nw3DatagramOverhead(true),
+		})
+	}()
+
+	aesClient, err := vector.New(vector.Config{
+		SharedKey:        key,
+		Morph:            true,
+		MorphCipher:      morph.CipherAES,
+		DialQUIC:         dialWithKeys(aesKeys),
+		DatagramOverhead: nw3DatagramOverhead(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aesClient.Close()
+
+	host, port, _ := net.SplitHostPort(echoLn.Addr().String())
+	target, err := nw3wire.NewIPTarget(netip.MustParseAddr(host), parsePort(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conn net.Conn
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		flowCtx, cancelFlow := context.WithTimeout(context.Background(), 2*time.Second)
+		conn, err = aesClient.OpenTCP(flowCtx, target)
+		cancelFlow()
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("aes quic egress flow: %v", err)
+	}
+	if _, err := conn.Write([]byte("aes!")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "aes!" {
+		t.Fatalf("got %q, want aes!", buf)
+	}
+	_ = conn.Close()
+
+	// ChaCha20 client cannot handshake with an AES QUIC Portal.
+	wrongClient, err := vector.New(vector.Config{
+		SharedKey:        key,
+		Morph:            true,
+		MorphCipher:      morph.CipherChaCha,
+		DialQUIC:         dialWithKeys(chachaKeys),
+		DatagramOverhead: nw3DatagramOverhead(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrongClient.Close()
+	badCtx, cancelBad := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancelBad()
+	if badConn, err := wrongClient.OpenTCP(badCtx, target); err == nil {
+		_ = badConn.Close()
+		t.Fatal("chacha client unexpectedly connected to aes quic portal")
+	}
+}
+
+func TestFingerprintAESCipher(t *testing.T) {
+	t.Setenv(runtime.EnvHandshakeTimeout, "300ms")
+	key := "0123456789abcdef0123456789abcdef"
+	cert := testLeaf(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srv, err := portal.New(portal.Config{
+		SharedKey:   key,
+		Morph:       true,
+		MorphCipher: morph.CipherAES,
+		TLS:         &tls.Config{Certificates: []tls.Certificate{cert}},
+		Upstream:    portal.Direct{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	want := wire.LeafCertificateSHA256Hex(cert.Certificate[0])
+	got, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, morph.CipherAES)
+	if err != nil {
+		t.Fatalf("fingerprint with aes: %v", err)
+	}
+	if got != want {
+		t.Fatalf("fingerprint = %s, want %s", got, want)
+	}
+	if _, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, morph.CipherChaCha); err == nil {
+		t.Fatal("fingerprint with mismatched chacha cipher unexpectedly succeeded")
+	}
+}
+
+func TestServeNW3UDPCleansUpOnControlClose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	srvConnCh := make(chan net.Conn, 1)
+	go func() {
+		c, _ := ln.Accept()
+		srvConnCh <- c
+	}()
+	cliConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cliConn.Close()
+	srvConn := <-srvConnCh
+	defer srvConn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serveNW3UDP(context.Background(), nil, srvConn, wire.Target{
+			Type: wire.TargetTypeIPv4,
+			Addr: netip.MustParseAddr("0.0.0.0"),
+		}, newLogger(logNone))
+	}()
+	// Read SOCKS5 UDP ASSOCIATE success reply (10 bytes for IPv4).
+	reply := make([]byte, 10)
+	_ = cliConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(cliConn, reply); err != nil {
+		t.Fatalf("read socks reply: %v", err)
+	}
+	if reply[1] != 0x00 {
+		t.Fatalf("socks reply status = %#x, want 0", reply[1])
+	}
+	// Closing the TCP control connection must unblock serveNW3UDP immediately
+	// without waiting for another UDP datagram.
+	_ = cliConn.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveNW3UDP returned error after control close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serveNW3UDP hung after control connection closed")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ohmycggk/nowhere-go/dgram"
 	"github.com/ohmycggk/nowhere-go/flowio"
+	"github.com/ohmycggk/nowhere-go/internal/bufpool"
 	"github.com/ohmycggk/nowhere-go/morph"
 	"github.com/ohmycggk/nowhere-go/qio"
 	"github.com/ohmycggk/nowhere-go/runtime"
@@ -30,6 +31,7 @@ const (
 type Config struct {
 	SharedKey    string
 	Morph        bool
+	MorphCipher  morph.Cipher
 	TLS          *tls.Config
 	Upstream     Upstream
 	Egress       bool
@@ -61,6 +63,9 @@ type Server struct {
 func New(cfg Config) (*Server, error) {
 	if err := wire.ValidateServiceKey(cfg.SharedKey); err != nil {
 		return nil, err
+	}
+	if !cfg.MorphCipher.Valid() {
+		return nil, errors.New("cipher must be chacha or aes")
 	}
 	if cfg.TLS == nil {
 		return nil, errors.New("nw3: missing portal TLS config")
@@ -94,7 +99,10 @@ func New(cfg Config) (*Server, error) {
 		overhead: cfg.DatagramOverhead,
 	}
 	if cfg.Morph {
-		keys := morph.Derive([]byte(cfg.SharedKey))
+		keys, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+		if err != nil {
+			return nil, err
+		}
 		s.keys = &keys
 	}
 	return s, nil
@@ -181,7 +189,7 @@ func (s *Server) serveTCP(ctx context.Context, raw net.Conn) {
 		if morphing {
 			s.admit.release(raw.RemoteAddr())
 			held = false
-			parkUntil(deadline)
+			parkUntil(ctx, deadline)
 		}
 		_ = tlsConn.Close()
 		return
@@ -376,7 +384,7 @@ func (s *Server) serveFlow(ctx context.Context, kind wire.FlowKind, target wire.
 		return
 	}
 	if kind == wire.FlowTCP {
-		flowio.Relay(client, peer, s.upload, s.download)
+		flowio.RelaySize(client, peer, s.upload, s.download, s.rt.TCPDataBuf)
 		return
 	}
 	if router == nil {
@@ -450,7 +458,7 @@ func (s *Server) serveViaEgress(ctx context.Context, kind wire.FlowKind, target 
 	}
 	peer := &pipe{Reader: st, write: st, closer: st}
 	if kind == wire.FlowTCP {
-		flowio.Relay(client, peer, s.upload, s.download)
+		flowio.RelaySize(client, peer, s.upload, s.download, s.rt.TCPDataBuf)
 		return
 	}
 	switch {
@@ -609,8 +617,10 @@ func relayUoT(client *pipe, udp net.Conn, up, down *flowio.Limiter, idle time.Du
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
 		for {
-			pkt, err := wire.ReadUoT(client)
+			pkt, err := wire.ReadUoTInto(client, *bp)
 			if err != nil {
 				break
 			}
@@ -623,7 +633,9 @@ func relayUoT(client *pipe, udp net.Conn, up, down *flowio.Limiter, idle time.Du
 	}()
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 65535)
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
+		buf := *bp
 		for {
 			_ = udp.SetReadDeadline(time.Now().Add(idle))
 			n, err := udp.Read(buf)
@@ -655,7 +667,9 @@ func relayQUICUDP(router *dgram.Router, id uint32, client *pipe, udp net.Conn, u
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 65535)
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
+		buf := *bp
 		for {
 			_ = udp.SetReadDeadline(time.Now().Add(idle))
 			n, err := udp.Read(buf)
@@ -708,10 +722,12 @@ func relayQUICUDP(router *dgram.Router, id uint32, client *pipe, udp net.Conn, u
 func relayUoTPair(left, right *pipe, up, down *flowio.Limiter) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	copy := func(dst, src *pipe, lim *flowio.Limiter) {
+	copyDir := func(dst, src *pipe, lim *flowio.Limiter) {
 		defer wg.Done()
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
 		for {
-			pkt, err := wire.ReadUoT(src)
+			pkt, err := wire.ReadUoTInto(src, *bp)
 			if err != nil {
 				break
 			}
@@ -722,8 +738,8 @@ func relayUoTPair(left, right *pipe, up, down *flowio.Limiter) {
 		}
 		_ = dst.CloseWrite()
 	}
-	go copy(right, left, up)
-	go copy(left, right, down)
+	go copyDir(right, left, up)
+	go copyDir(left, right, down)
 	wg.Wait()
 }
 
@@ -747,8 +763,10 @@ func bridgeUoT(tls *pipe, router *dgram.Router, id uint32, quic *pipe, up, down 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		bp := bufpool.GetUDP()
+		defer bufpool.PutUDP(bp)
 		for {
-			pkt, err := wire.ReadUoT(tls)
+			pkt, err := wire.ReadUoTInto(tls, *bp)
 			if err != nil {
 				finish()
 				return
@@ -906,34 +924,32 @@ func (a *admit) takeLocked(key string) bool {
 // unnoticed between them. It is used only for Morph TCP.
 func (a *admit) wait(ctx context.Context, addr net.Addr, deadline time.Time) bool {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := sourceKey(addr)
+	if a.takeLocked(key) {
+		return true
+	}
+	wait := time.Until(deadline)
+	if ctx.Err() != nil || wait <= 0 {
+		return false
+	}
 	if a.cond == nil {
 		a.cond = sync.NewCond(&a.mu)
 	}
-	key := sourceKey(addr)
-	timer := time.NewTimer(time.Until(deadline))
-	stop := make(chan struct{})
-	defer func() {
-		timer.Stop()
-		close(stop)
-	}()
-	go func() {
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-		case <-stop:
-			return
-		}
+	wake := func() {
 		a.mu.Lock()
 		a.cond.Broadcast()
 		a.mu.Unlock()
-	}()
+	}
+	timer := time.AfterFunc(wait, wake)
+	defer timer.Stop()
+	stopCtx := context.AfterFunc(ctx, wake)
+	defer stopCtx()
 	for {
 		if a.takeLocked(key) {
-			a.mu.Unlock()
 			return true
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
-			a.mu.Unlock()
 			return false
 		}
 		a.cond.Wait()
@@ -967,9 +983,16 @@ func setZeroLinger(conn net.Conn) error {
 	return nil
 }
 
-func parkUntil(deadline time.Time) {
-	if wait := time.Until(deadline); wait > 0 {
-		time.Sleep(wait)
+func parkUntil(ctx context.Context, deadline time.Time) {
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
 	}
 }
 

@@ -84,6 +84,7 @@ func CheckNW3Dir(dir string) (int, error) {
 		{"vectors.json", checkNW3Vectors},
 		{"morph.json", checkNW3Morph},
 		{"prelude.json", checkNW3Prelude},
+		{"cipher.json", checkNW3Cipher},
 	} {
 		count, err := c.fn(filepath.Join(dir, c.name))
 		if err != nil {
@@ -377,4 +378,136 @@ func checkNW3Prelude(path string) (int, error) {
 		}
 	}
 	return len(f.Cases), nil
+}
+
+type nw3CipherFile struct {
+	Protocol      string            `json:"protocol"`
+	SharedKeyText string            `json:"shared_key_text"`
+	NonceHex      string            `json:"nonce_hex"`
+	TCPCases      []nw3CipherTCPRow `json:"tcp_cases"`
+	UDPCases      []nw3CipherUDPRow `json:"udp_cases"`
+}
+
+type nw3CipherTCPRow struct {
+	ID        string `json:"id"`
+	Cipher    string `json:"cipher"`
+	Direction string `json:"direction"`
+	Offset    uint64 `json:"offset"`
+	PlainHex  string `json:"plain_hex"`
+	CipherHex string `json:"cipher_hex"`
+}
+
+type nw3CipherUDPRow struct {
+	ID        string `json:"id"`
+	Cipher    string `json:"cipher"`
+	Direction string `json:"direction"`
+	PlainHex  string `json:"plain_hex"`
+	CipherHex string `json:"cipher_hex"`
+}
+
+func checkNW3Cipher(path string) (int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var f nw3CipherFile
+	if err := unmarshal(raw, path, &f); err != nil {
+		return 0, err
+	}
+	if f.Protocol != "nw3" {
+		return 0, fmt.Errorf("%s: protocol %q, want nw3", path, f.Protocol)
+	}
+	nonceSlice, err := vectors.DecodeHex(f.NonceHex)
+	if err != nil || len(nonceSlice) != 12 {
+		return 0, fmt.Errorf("%s: invalid nonce_hex", path)
+	}
+	var nonce [12]byte
+	copy(nonce[:], nonceSlice)
+
+	n := 0
+	for _, tc := range f.TCPCases {
+		c, err := morph.ParseCipher(tc.Cipher)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s: %w", path, tc.ID, err)
+		}
+		keys, err := morph.DeriveWithCipher([]byte(f.SharedKeyText), c)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s: %w", path, tc.ID, err)
+		}
+		var dirKey [32]byte
+		switch tc.Direction {
+		case "tcp_c2s":
+			dirKey = keys.TCPC2S
+		case "tcp_s2c":
+			dirKey = keys.TCPS2C
+		default:
+			return n, fmt.Errorf("%s: %s: unknown tcp direction %q", path, tc.ID, tc.Direction)
+		}
+		plain, err := vectors.DecodeHex(tc.PlainHex)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s plain_hex: %w", path, tc.ID, err)
+		}
+		want, err := vectors.DecodeHex(tc.CipherHex)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s cipher_hex: %w", path, tc.ID, err)
+		}
+		got := make([]byte, len(plain))
+		if err := morph.ApplyTCPAt(c, &dirKey, &nonce, tc.Offset, got, plain); err != nil {
+			return n, fmt.Errorf("%s: %s apply: %w", path, tc.ID, err)
+		}
+		if !bytes.Equal(got, want) {
+			return n, fmt.Errorf("%s: %s ciphertext mismatch\n got %x\nwant %x", path, tc.ID, got, want)
+		}
+		roundTrip := make([]byte, len(got))
+		if err := morph.ApplyTCPAt(c, &dirKey, &nonce, tc.Offset, roundTrip, got); err != nil {
+			return n, fmt.Errorf("%s: %s decrypt: %w", path, tc.ID, err)
+		}
+		if !bytes.Equal(roundTrip, plain) {
+			return n, fmt.Errorf("%s: %s round-trip mismatch", path, tc.ID)
+		}
+		n++
+	}
+	for _, tc := range f.UDPCases {
+		c, err := morph.ParseCipher(tc.Cipher)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s: %w", path, tc.ID, err)
+		}
+		keys, err := morph.DeriveWithCipher([]byte(f.SharedKeyText), c)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s: %w", path, tc.ID, err)
+		}
+		var dirKey [32]byte
+		switch tc.Direction {
+		case "udp_c2s":
+			dirKey = keys.UDPC2S
+		case "udp_s2c":
+			dirKey = keys.UDPS2C
+		default:
+			return n, fmt.Errorf("%s: %s: unknown udp direction %q", path, tc.ID, tc.Direction)
+		}
+		plain, err := vectors.DecodeHex(tc.PlainHex)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s plain_hex: %w", path, tc.ID, err)
+		}
+		want, err := vectors.DecodeHex(tc.CipherHex)
+		if err != nil {
+			return n, fmt.Errorf("%s: %s cipher_hex: %w", path, tc.ID, err)
+		}
+		got := make([]byte, len(plain))
+		if err := morph.ApplyDatagram(c, &dirKey, &nonce, got, plain); err != nil {
+			return n, fmt.Errorf("%s: %s apply: %w", path, tc.ID, err)
+		}
+		if !bytes.Equal(got, want) {
+			return n, fmt.Errorf("%s: %s ciphertext mismatch\n got %x\nwant %x", path, tc.ID, got, want)
+		}
+		roundTrip := make([]byte, len(got))
+		if err := morph.ApplyDatagram(c, &dirKey, &nonce, roundTrip, got); err != nil {
+			return n, fmt.Errorf("%s: %s decrypt: %w", path, tc.ID, err)
+		}
+		if !bytes.Equal(roundTrip, plain) {
+			return n, fmt.Errorf("%s: %s round-trip mismatch", path, tc.ID)
+		}
+		n++
+	}
+	return n, nil
 }

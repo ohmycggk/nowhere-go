@@ -10,12 +10,20 @@ const (
 // replayRegistry is the in-process Morph TCP replay table for one Portal key
 // set. It keeps at most 16384 identities in strict insertion order and a
 // 1024-counter window for each. There is no TTL, persistence, or nonce cache.
+//
+// Both index and slots are pointer-free so the GC does not scan replay state
+// even when all 16384 identities are populated.
 type replayRegistry struct {
-	mu      sync.Mutex
-	entries map[uint64]*replayEntry
-	order   [replayCapacity]uint64
-	start   int
-	count   int
+	mu    sync.Mutex
+	index map[uint64]uint16
+	slots []replaySlot
+	start int
+	count int
+}
+
+type replaySlot struct {
+	identity uint64
+	entry    replayEntry
 }
 
 type replayEntry struct {
@@ -24,7 +32,7 @@ type replayEntry struct {
 }
 
 func newReplayRegistry() *replayRegistry {
-	return &replayRegistry{entries: make(map[uint64]*replayEntry)}
+	return &replayRegistry{index: make(map[uint64]uint16)}
 }
 
 func (r *replayRegistry) precheck(identity, counter uint64) bool {
@@ -33,11 +41,11 @@ func (r *replayRegistry) precheck(identity, counter uint64) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry := r.entries[identity]
-	if entry == nil {
+	idx, ok := r.index[identity]
+	if !ok {
 		return true
 	}
-	return entry.accepts(counter)
+	return r.slots[idx].entry.accepts(counter)
 }
 
 func (r *replayRegistry) commit(identity, counter uint64) bool {
@@ -46,24 +54,34 @@ func (r *replayRegistry) commit(identity, counter uint64) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if entry := r.entries[identity]; entry != nil {
+	if idx, ok := r.index[identity]; ok {
+		entry := &r.slots[idx].entry
 		if !entry.accepts(counter) {
 			return false
 		}
 		entry.mark(counter)
 		return true
 	}
+	var slotIdx int
 	if r.count == replayCapacity {
-		oldest := r.order[r.start]
-		delete(r.entries, oldest)
+		slotIdx = r.start
+		delete(r.index, r.slots[slotIdx].identity)
+		r.slots[slotIdx] = replaySlot{
+			identity: identity,
+			entry:    replayEntry{highest: counter},
+		}
+		r.slots[slotIdx].entry.bitmap[0] = 1
 		r.start = (r.start + 1) % replayCapacity
-		r.count--
+	} else {
+		slotIdx = len(r.slots)
+		r.slots = append(r.slots, replaySlot{
+			identity: identity,
+			entry:    replayEntry{highest: counter},
+		})
+		r.slots[slotIdx].entry.bitmap[0] = 1
+		r.count++
 	}
-	entry := &replayEntry{highest: counter}
-	entry.bitmap[0] = 1
-	r.entries[identity] = entry
-	r.order[(r.start+r.count)%replayCapacity] = identity
-	r.count++
+	r.index[identity] = uint16(slotIdx)
 	return true
 }
 

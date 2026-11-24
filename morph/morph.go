@@ -11,6 +11,8 @@
 package morph
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,33 +25,45 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ohmycggk/nowhere-go/internal/bufpool"
 	"github.com/ohmycggk/nowhere-go/internal/chacha20"
 	"github.com/ohmycggk/nowhere-go/runtime"
 )
 
 const (
-	nonceLen      = 12
-	udpPreludeLen = 12
-	preludeLen    = 64
-	streamLimit   = (1 << 38) - 64
-	preludeEnv    = "NOW_MORPH_TCP_PRELUDE"
-	morphRootSalt = "nowhere/nw3/morph"
+	nonceLen          = 12
+	udpPreludeLen     = 12
+	preludeLen        = 64
+	maxPooledUDPMask  = 2048
+	maxRetainedUDPBuf = bufpool.UDPSize + nonceLen
+	preludeEnv        = "NOW_MORPH_TCP_PRELUDE"
+	morphRootSalt     = "nowhere/nw3/morph"
 )
+
+var udpMaskPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, maxPooledUDPMask)
+		return &b
+	},
+}
 
 // Keys are the directional Morph outputs for one shared key.
 //
-// Copies made from the same Derive call share one Vector prelude identity and
-// one Portal replay registry. Keys constructed field by field have neither and
-// cannot send or accept an authenticated Morph TCP prelude.
+// Copies made from the same Derive or DeriveWithCipher call share one Vector
+// prelude identity and one Portal replay registry. Keys constructed field by
+// field have neither and cannot send or accept an authenticated Morph TCP
+// prelude. The zero value of Cipher selects ChaCha20-IETF.
 type Keys struct {
 	TCPC2S [32]byte
 	TCPS2C [32]byte
 	UDPC2S [32]byte
 	UDPS2C [32]byte
+	Cipher Cipher
 	state  *preludeState
 }
 
-// Derive builds Morph keys. sharedKey is the same raw text used for authentication.
+// Derive builds Morph keys using the default ChaCha20-IETF cipher. sharedKey is
+// the same raw text used for authentication.
 func Derive(sharedKey []byte) Keys {
 	root := hmacSHA256([]byte(morphRootSalt), sharedKey)
 	return Keys{
@@ -57,8 +71,19 @@ func Derive(sharedKey []byte) Keys {
 		TCPS2C: expand(root, "tcp s2c"),
 		UDPC2S: expand(root, "udp c2s"),
 		UDPS2C: expand(root, "udp s2c"),
+		Cipher: CipherChaCha,
 		state:  newPreludeState(root),
 	}
+}
+
+// DeriveWithCipher builds Morph keys using the selected Nowhere 3.4 cipher.
+func DeriveWithCipher(sharedKey []byte, c Cipher) (Keys, error) {
+	if !c.Valid() {
+		return Keys{}, errInvalidCipher
+	}
+	keys := Derive(sharedKey)
+	keys.Cipher = c
+	return keys, nil
 }
 
 func hmacSHA256(key, data []byte) [32]byte {
@@ -174,6 +199,9 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 	if keys.state == nil {
 		return nil, errPreludeState
 	}
+	if !keys.Cipher.Valid() {
+		return nil, errInvalidCipher
+	}
 	identity, counter, err := keys.state.allocate()
 	if err != nil {
 		return nil, err
@@ -190,16 +218,27 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 	if err := readEntropy(nonce[:]); err != nil {
 		return nil, err
 	}
+	readCipher, err := newTCPCipher(keys.Cipher, &keys.TCPS2C, &nonce)
+	if err != nil {
+		return nil, err
+	}
+	writeCipher, err := newTCPCipher(keys.Cipher, &keys.TCPC2S, &nonce)
+	if err != nil {
+		return nil, err
+	}
 	encodePrelude(keys.state, &prelude, &nonce, identity, counter)
 	pref := make([]byte, 0, preludeLen+nonceLen)
 	pref = append(pref, prelude[:]...)
 	pref = append(pref, nonce[:]...)
 	return &tcpConn{
-		Conn:      conn,
-		readKey:   keys.TCPS2C,
-		writeKey:  keys.TCPC2S,
-		nonce:     nonce,
-		writePref: pref,
+		Conn:        conn,
+		cipher:      keys.Cipher,
+		readKey:     keys.TCPS2C,
+		writeKey:    keys.TCPC2S,
+		nonce:       nonce,
+		readCipher:  readCipher,
+		writeCipher: writeCipher,
+		writePref:   pref,
 	}, nil
 }
 
@@ -212,6 +251,7 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 func WrapTCPServer(conn net.Conn, keys Keys) net.Conn {
 	return &tcpConn{
 		Conn:     conn,
+		cipher:   keys.Cipher,
 		readKey:  keys.TCPC2S,
 		writeKey: keys.TCPS2C,
 		server:   true,
@@ -246,8 +286,11 @@ func ReleaseAuthenticated(conn net.Conn, deadline time.Time) error {
 
 type tcpConn struct {
 	net.Conn
+	cipher            Cipher
 	readKey, writeKey [32]byte
 	nonce             [nonceLen]byte
+	readCipher        *tcpCipher
+	writeCipher       *tcpCipher
 	readOff, writeOff uint64
 	writePref         []byte
 	server            bool
@@ -281,12 +324,16 @@ func (c *tcpConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := checkLimit(c.readOff, len(p)); err != nil {
-		return 0, err
+	remaining := c.readCipher.remaining(c.readOff)
+	if remaining == 0 {
+		return 0, c.readCipher.exhaustedErr()
+	}
+	if uint64(len(p)) > remaining {
+		p = p[:int(remaining)]
 	}
 	n, err := c.Conn.Read(p)
 	if n > 0 {
-		chacha20.XORKeyStreamAt(p[:n], p[:n], &c.readKey, &c.nonce, c.readOff)
+		c.readCipher.xorKeyStream(p[:n], p[:n])
 		c.readOff += uint64(n)
 	}
 	return n, err
@@ -311,6 +358,9 @@ func (c *tcpConn) bootstrapOnce() error {
 	if c.state == nil {
 		return errPreludeState
 	}
+	if !c.cipher.Valid() {
+		return errInvalidCipher
+	}
 	if err := setLinger(c.Conn, 0); err != nil {
 		return err
 	}
@@ -328,6 +378,18 @@ func (c *tcpConn) bootstrapOnce() error {
 	if !c.state.registry().precheck(identity, counter) {
 		return ErrPreludeRejected
 	}
+	rc, err := newTCPCipher(c.cipher, &c.readKey, &c.nonce)
+	if err != nil {
+		return err
+	}
+	wc, err := newTCPCipher(c.cipher, &c.writeKey, &c.nonce)
+	if err != nil {
+		return err
+	}
+	c.readCipher = rc
+	c.writeMu.Lock()
+	c.writeCipher = wc
+	c.writeMu.Unlock()
 	pending, err := c.readClientHello()
 	if err != nil {
 		return err
@@ -355,14 +417,47 @@ func (c *tcpConn) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := checkLimit(c.writeOff, len(p)); err != nil {
-		return 0, err
+	if c.writeCipher == nil {
+		return 0, errNotBootstrapped
 	}
-	buf := append([]byte(nil), p...)
-	chacha20.XORKeyStreamAt(buf, buf, &c.writeKey, &c.nonce, c.writeOff)
-	n, err := c.Conn.Write(buf)
-	c.writeOff += uint64(n)
-	return n, err
+	remaining := c.writeCipher.remaining(c.writeOff)
+	if remaining == 0 {
+		return 0, c.writeCipher.exhaustedErr()
+	}
+	count := len(p)
+	exhaustedAfter := false
+	if uint64(count) > remaining {
+		count = int(remaining)
+		exhaustedAfter = true
+	}
+	bp := bufpool.GetTCP()
+	defer bufpool.PutTCP(bp)
+	scratch := *bp
+	written := 0
+	for written < count {
+		chunk := count - written
+		if chunk > len(scratch) {
+			chunk = len(scratch)
+		}
+		buf := scratch[:chunk]
+		c.writeCipher.xorKeyStream(buf, p[written:written+chunk])
+		n, err := c.Conn.Write(buf)
+		if n > 0 {
+			c.writeOff += uint64(n)
+			written += n
+		}
+		if n != chunk {
+			_ = c.writeCipher.seek(c.writeOff)
+			return written, err
+		}
+		if err != nil {
+			return written, err
+		}
+	}
+	if exhaustedAfter {
+		return written, c.writeCipher.exhaustedErr()
+	}
+	return written, nil
 }
 
 // silentConn keeps a rejected Morph TCP socket from being drained. Reads fail
@@ -373,13 +468,6 @@ type silentConn struct {
 }
 
 func (c *silentConn) Read([]byte) (int, error) { return 0, c.err }
-
-func checkLimit(offset uint64, n int) error {
-	if n < 0 || offset+uint64(n) > streamLimit {
-		return errors.New("nw3: Morph TCP keystream exhausted")
-	}
-	return nil
-}
 
 // WrapPacketConn masks each UDP datagram with a fresh nonce.
 // Client sockets send with udp c2s and receive with udp s2c.
@@ -397,11 +485,37 @@ func checkLimit(offset uint64, n int) error {
 // No extra socket is opened per peer. A future batching socket must still give
 // every QUIC segment its own nonce and must not treat the Prelude as a segment.
 func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) (net.PacketConn, error) {
+	if !keys.Cipher.Valid() {
+		return nil, errInvalidCipher
+	}
 	tx, rx := keys.UDPC2S, keys.UDPS2C
 	if !client {
 		tx, rx = keys.UDPS2C, keys.UDPC2S
 	}
-	c := &packetConn{PacketConn: pc, txKey: tx, rxKey: rx, server: !client}
+	var txBlock, rxBlock cipher.Block
+	if keys.Cipher == CipherAES {
+		var err error
+		txBlock, err = aes.NewCipher(tx[:16])
+		if err != nil {
+			return nil, err
+		}
+		rxBlock, err = aes.NewCipher(rx[:16])
+		if err != nil {
+			return nil, err
+		}
+	}
+	c := &packetConn{
+		PacketConn: pc,
+		cipher:     keys.Cipher,
+		txKey:      tx,
+		rxKey:      rx,
+		txBlock:    txBlock,
+		rxBlock:    rxBlock,
+		server:     !client,
+	}
+	if err := c.nonces.reseed(); err != nil {
+		return nil, err
+	}
 	if client {
 		policy, err := udpPreludePolicy()
 		if err != nil {
@@ -416,13 +530,50 @@ func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) (net.PacketConn, 
 	return c, nil
 }
 
+type udpNonceGen struct {
+	mu        sync.Mutex
+	seed      [32]byte
+	generated uint64
+}
+
+func (g *udpNonceGen) reseed() error {
+	_, err := io.ReadFull(rand.Reader, g.seed[:])
+	if err != nil {
+		return err
+	}
+	g.generated = 0
+	return nil
+}
+
+// next produces one 12-byte UDP nonce using ChaCha20 from a CSPRNG seed,
+// reseeding before the ChaCha20 stream limit, matching Nowhere's UdpNonceGenerator.
+func (g *udpNonceGen) next() ([nonceLen]byte, error) {
+	var nonce [nonceLen]byte
+	var zero [nonceLen]byte
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if chachaStreamLimit-g.generated < nonceLen {
+		if err := g.reseed(); err != nil {
+			return nonce, err
+		}
+	}
+	chacha20.XORKeyStreamAt(nonce[:], nonce[:], &g.seed, &zero, g.generated)
+	g.generated += nonceLen
+	return nonce, nil
+}
+
 type packetConn struct {
 	net.PacketConn
+	cipher  Cipher
 	txKey   [32]byte
 	rxKey   [32]byte
+	txBlock cipher.Block
+	rxBlock cipher.Block
 	server  bool
-	mu      sync.Mutex
+	txMu    sync.Mutex
+	rxMu    sync.Mutex
 	readBuf []byte
+	nonces  udpNonceGen
 	// prelude is the one unsent UDP Prelude. Nil after a successful submit
 	// and on server sockets.
 	prelude []byte
@@ -467,25 +618,47 @@ func supportedQUICPacket(packet []byte) bool {
 func (c *packetConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	// The lock covers only the pending Prelude. Holding it across the socket
 	// write deadlocks with ReadFrom, which quic-go runs concurrently.
-	c.mu.Lock()
+	c.txMu.Lock()
 	prelude := c.prelude
 	c.prelude = nil
-	c.mu.Unlock()
+	c.txMu.Unlock()
 	if len(prelude) > 0 {
 		n, err := c.PacketConn.WriteTo(prelude, addr)
 		if n < len(prelude) {
-			c.mu.Lock()
+			c.txMu.Lock()
 			if c.prelude == nil {
 				c.prelude = prelude
 			}
-			c.mu.Unlock()
+			c.txMu.Unlock()
 			if err == nil {
 				err = io.ErrShortWrite
 			}
 			return 0, err
 		}
 	}
-	return writeMasked(c.PacketConn, p, addr, &c.txKey)
+	nonce, err := c.nonces.next()
+	if err != nil {
+		return 0, err
+	}
+	wireLen := nonceLen + len(p)
+	var bp *[]byte
+	var wire []byte
+	if wireLen <= maxPooledUDPMask {
+		bp = udpMaskPool.Get().(*[]byte)
+		defer udpMaskPool.Put(bp)
+		wire = (*bp)[:wireLen]
+	} else {
+		wire = make([]byte, wireLen)
+	}
+	copy(wire, nonce[:])
+	if len(p) > 0 {
+		applyDatagramWithBlock(c.cipher, &c.txKey, c.txBlock, &nonce, wire[nonceLen:], p)
+	}
+	n, err := c.PacketConn.WriteTo(wire, addr)
+	if n < nonceLen {
+		return 0, err
+	}
+	return n - nonceLen, err
 }
 
 func udpPreludePolicy() (string, error) {
@@ -528,27 +701,30 @@ func generateUDPPreludeWith(policy string, fill func([]byte) error) ([udpPrelude
 
 func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	need := nonceLen + len(p)
-	c.mu.Lock()
+	c.rxMu.Lock()
 	buf := c.readBuf
 	c.readBuf = nil
-	c.mu.Unlock()
+	c.rxMu.Unlock()
 	if cap(buf) < need {
 		buf = make([]byte, need)
 	}
 	buf = buf[:need]
 	defer func() {
-		c.mu.Lock()
+		if cap(buf) > maxRetainedUDPBuf {
+			return
+		}
+		c.rxMu.Lock()
 		if cap(c.readBuf) < cap(buf) {
 			c.readBuf = buf
 		}
-		c.mu.Unlock()
+		c.rxMu.Unlock()
 	}()
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(buf)
 		if err != nil {
 			return 0, addr, err
 		}
-		n, ok := unmaskDatagram(p, buf[:n], &c.rxKey, c.server)
+		n, ok := unmaskDatagram(p, buf[:n], c.cipher, &c.rxKey, c.rxBlock, c.server)
 		if !ok {
 			continue
 		}
@@ -556,45 +732,18 @@ func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	}
 }
 
-func writeMasked(conn interface {
-	WriteTo([]byte, net.Addr) (int, error)
-}, p []byte, addr net.Addr, key *[32]byte) (int, error) {
-	wire, err := maskDatagram(p, key)
-	if err != nil {
-		return 0, err
-	}
-	n, err := conn.WriteTo(wire, addr)
-	if n < nonceLen {
-		return 0, err
-	}
-	return n - nonceLen, err
-}
-
-func maskDatagram(p []byte, key *[32]byte) ([]byte, error) {
-	var nonce [nonceLen]byte
-	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, nonceLen+len(p))
-	copy(buf, nonce[:])
-	if len(p) > 0 {
-		chacha20.XORKeyStreamAt(buf[nonceLen:], p, key, &nonce, 0)
-	}
-	return buf, nil
-}
-
 // unmaskDatagram decrypts one datagram into p. ok is false when a server drops
 // the datagram, or when it carried no payload. n is the plaintext length.
 // The decrypted bytes temporarily overwrite the ciphertext in wire, which the
 // caller does not reuse.
-func unmaskDatagram(p, wire []byte, key *[32]byte, server bool) (int, bool) {
+func unmaskDatagram(p, wire []byte, c Cipher, key *[32]byte, block cipher.Block, server bool) (int, bool) {
 	if len(wire) <= nonceLen {
 		return 0, false
 	}
 	var nonce [nonceLen]byte
 	copy(nonce[:], wire[:nonceLen])
 	payload := wire[nonceLen:]
-	chacha20.XORKeyStreamAt(payload, payload, key, &nonce, 0)
+	applyDatagramWithBlock(c, key, block, &nonce, payload, payload)
 	if server && !supportedQUICPacket(payload) {
 		return 0, false
 	}

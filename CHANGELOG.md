@@ -10,12 +10,53 @@ and all clients.
 
 ## Unreleased
 
+### Changed
+
+- Protocol baseline is Nowhere 3.4.0 (`000001c866b0c9fada350c84bdc11702473564a6`).
+  NW3 Core framing, ALPN `nw3`, AuthFrame, FlowStart, SetupResult, and the
+  authenticated TCP/UDP Prelude envelopes are unchanged.
+- Added the Morph Cipher Extension (`morph.Cipher`: `CipherChaCha` default,
+  `CipherAES` for AES-128-CTR) across `morph`, `portal`, `vector`, `egress`,
+  and `cmd/nowhere` (`cipher=chacha|aes` on service URLs and `fingerprint`
+  share links). AES-128-CTR derives each TCP direction key from
+  `HMAC-SHA256(direction, nonce)[0:16]` with a zero 128-bit big-endian initial
+  counter and a 2^48 byte (256 TiB) per-direction limit, and uses
+  `direction[0:16]` with `nonce || 0x00000000` for UDP datagrams.
+- Updated `runtime` QUIC transport memory profile windows to match Nowhere 3.4:
+  `memory` (4/16/8 MiB), `balanced` (4/16/16 MiB), and `throughput`
+  (4/32/32 MiB) for stream receive, connection receive, and send windows.
+- Aligned `cmd/nowhere` nw3 URL query parsing with Nowhere 3.4 literal-key
+  first-value semantics and validated `cipher` even when `morph=0`.
+- Exported the Nowhere 3.4.0 AES-128-CTR interoperability vectors in
+  `testdata/vectors/nw3/cipher.json`, added verification to `nowhere-check`,
+  and regenerated `UPSTREAM.lock` (`protocol_sha256` and `vector_tree_sha256`).
+- The CLI version is 3.4.0.
+
 ### Fixed
 
-- Regenerated `UPSTREAM.lock` from the Nowhere 3.3.0 checkout. `protocol_sha256`
-  now records the 3.3.0 wire sources, replacing the 3.2 placeholder used at
-  release. The nw3 vector corpus is unchanged, so `vector_tree_sha256` stays
-  the same.
+- Wrapped TLS Egress connections in `egress.Run` with `morph.WrapTCPClient`
+  using a shared per-process prelude identity and monotonic counter when
+  `Morph` is enabled, matching Nowhere 3.4 TLS Egress behavior for both
+  ChaCha20-IETF and AES-128-CTR.
+- Rewound `morph` TCP write cipher state on partial or failed underlying socket
+  writes so retried writes stay aligned with the wire offset for both ciphers.
+- Hardened memory management across `portal`, `dgram`, `egress`, `vector`,
+  `morph`, `flowio`, `wire`, and `cmd/nowhere`:
+  - Replaced `portal` Egress FIFO slice shifting with a zeroing/shrinking ring
+    buffer and removed superfluous helper goroutines in `registry.push`,
+    `registry.claim`, and `admit.wait`; made `parkUntil` cancel with `ctx`.
+  - Enforced the connection-wide `NOW_QUIC_UDP_QUEUE_BYTES` byte budget in
+    `dgram.Router` (including `vector.Client`), guarded `wire.Reassembler`
+    access against concurrent flow teardown, and cleaned up state on exit.
+  - Closed orphaned TCP connections on `egress` dial timeout races and fixed
+    SOCKS5 UDP associate map/goroutine leaks in `cmd/nowhere`.
+  - Pooled hot-path TCP/UDP relay buffers, wired `NOW_TCP_DATA_BUF_SIZE` into
+    `flowio.RelaySize`, switched `wire.WriteUoT`/`ReadUoTInto` to single-write
+    pooled framing, pooled `morph` TCP/UDP write buffers with a ChaCha20 UDP
+    nonce generator, and replaced `morph` replay pointer entries with a
+    pointer-free slot ring.
+- Regenerated `UPSTREAM.lock` from the Nowhere 3.3.0 checkout (superseded by
+  3.4.0 above).
 
 ## v3.3.0 - 2026-10-31
 

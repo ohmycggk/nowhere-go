@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/ohmycggk/nowhere-go/egress"
 	"github.com/ohmycggk/nowhere-go/flowio"
@@ -19,6 +20,13 @@ import (
 	"github.com/ohmycggk/nowhere-go/vector"
 	nw3wire "github.com/ohmycggk/nowhere-go/wire"
 )
+
+var cliUDPBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535)
+		return &b
+	},
+}
 
 func loadNW3(cfg nw3Config) (runtime.Settings, error) {
 	morphUDP := cfg.morph && cfg.kind != nw3Portal && cfg.endpoint.hasUDP() && !cfg.endpoint.hasTCP()
@@ -64,6 +72,7 @@ func runNW3Portal(ctx context.Context, cfg nw3Config, log *logger) error {
 	srv, err := portal.New(portal.Config{
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
+		MorphCipher:      cfg.cipher,
 		TLS:              tlsCfg,
 		Upstream:         upstream,
 		Egress:           cfg.exit == nw3ExitEgress,
@@ -102,6 +111,10 @@ func nw3DatagramOverhead(morph bool) int {
 }
 
 func runNW3Vector(ctx context.Context, cfg nw3Config, log *logger) error {
+	rt, err := loadNW3(cfg)
+	if err != nil {
+		return err
+	}
 	client, err := newNW3Vector(ctx, cfg)
 	if err != nil {
 		return err
@@ -120,7 +133,7 @@ func runNW3Vector(ctx context.Context, cfg nw3Config, log *logger) error {
 				errCh <- err
 				return
 			}
-			go serveNW3SOCKS(ctx, client, conn, cfg.inUser, cfg.inPass, log)
+			go serveNW3SOCKS(ctx, client, conn, cfg.inUser, cfg.inPass, rt.TCPDataBuf, log)
 		}
 	}()
 	return waitDone(ctx, errCh)
@@ -135,6 +148,7 @@ func runNW3Egress(ctx context.Context, cfg nw3Config, log *logger) error {
 	eg := egress.Config{
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
+		MorphCipher:      cfg.cipher,
 		Upstream:         directUpstream{fd},
 		UploadMbps:       cfg.rate,
 		DownloadMbps:     cfg.etar,
@@ -162,6 +176,7 @@ func newNW3Vector(ctx context.Context, cfg nw3Config) (*vector.Client, error) {
 	vc := vector.Config{
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
+		MorphCipher:      cfg.cipher,
 		UploadMbps:       cfg.rate,
 		DownloadMbps:     cfg.etar,
 		DatagramOverhead: nw3DatagramOverhead(cfg.morph),
@@ -191,7 +206,12 @@ func dialNW3Carrier(ctx context.Context, cfg nw3Config, tlsCfg *tls.Config, clie
 		return nil, err
 	}
 	if cfg.morph {
-		pc, err = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+		keys, kerr := morph.DeriveWithCipher([]byte(cfg.key), cfg.cipher)
+		if kerr != nil {
+			_ = pc.Close()
+			return nil, kerr
+		}
+		pc, err = morph.WrapPacketConn(pc, keys, client)
 		if err != nil {
 			_ = pc.Close()
 			return nil, err
@@ -218,7 +238,11 @@ func listenNW3UDP(cfg nw3Config, tlsCfg *tls.Config, client bool, log *logger) (
 	var listeners []qio.Listener
 	for _, pc := range pcs {
 		if cfg.morph {
-			pc, err = morph.WrapPacketConn(pc, morph.Derive([]byte(cfg.key)), client)
+			keys, kerr := morph.DeriveWithCipher([]byte(cfg.key), cfg.cipher)
+			if kerr != nil {
+				return nil, kerr
+			}
+			pc, err = morph.WrapPacketConn(pc, keys, client)
 			if err != nil {
 				return nil, err
 			}
@@ -302,7 +326,7 @@ func (s socksUpstream) DialUDP(ctx context.Context, target nw3wire.Target) (net.
 	return s.DialContext(ctx, "udp", target.HostPort())
 }
 
-func serveNW3SOCKS(ctx context.Context, client *vector.Client, conn net.Conn, user, pass string, log *logger) {
+func serveNW3SOCKS(ctx context.Context, client *vector.Client, conn net.Conn, user, pass string, tcpBufSize int, log *logger) {
 	defer conn.Close()
 	var cmd byte
 	var target wire.Target
@@ -333,7 +357,7 @@ func serveNW3SOCKS(ctx context.Context, client *vector.Client, conn net.Conn, us
 		if err := socksReply(conn, 0x00, conn.LocalAddr()); err != nil {
 			return
 		}
-		flowio.Relay(conn, remote, nil, nil)
+		flowio.RelaySize(conn, remote, nil, nil, tcpBufSize)
 	case socksCmdUDP:
 		if err := serveNW3UDP(ctx, client, conn, target, log); err != nil {
 			log.debug("udp associate: %v", err)
@@ -369,7 +393,9 @@ func serveNW3UDP(ctx context.Context, client *vector.Client, control net.Conn, r
 		_ = socksReply(control, 0x01, nil)
 		return err
 	}
-	defer udp.Close()
+	var closeUDPOnce sync.Once
+	closeUDP := func() { closeUDPOnce.Do(func() { _ = udp.Close() }) }
+	defer closeUDP()
 	if err := socksReply(control, 0x00, udp.LocalAddr()); err != nil {
 		return err
 	}
@@ -379,6 +405,7 @@ func serveNW3UDP(ctx context.Context, client *vector.Client, control net.Conn, r
 	}
 	var mu sync.Mutex
 	flows := map[destKey]net.Conn{}
+	var readers sync.WaitGroup
 	// expected pins the accepted client source: the request port when given,
 	// otherwise the first datagram source. nil means nothing pinned yet.
 	var expected *net.UDPAddr
@@ -387,29 +414,44 @@ func serveNW3UDP(ctx context.Context, client *vector.Client, control net.Conn, r
 	}
 	defer func() {
 		mu.Lock()
-		for _, c := range flows {
+		for key, c := range flows {
 			_ = c.Close()
+			delete(flows, key)
 		}
 		mu.Unlock()
+		readers.Wait()
 	}()
 	done := make(chan struct{})
+	stopCtx := context.AfterFunc(ctx, func() {
+		_ = control.SetReadDeadline(time.Now())
+		closeUDP()
+	})
+	defer stopCtx()
 	go func() {
-		buf := make([]byte, 1)
-		_, _ = control.Read(buf)
+		var b [1]byte
+		_, _ = control.Read(b[:])
 		close(done)
+		// Unblock udp.ReadFrom immediately when the SOCKS TCP control stream ends.
+		closeUDP()
 	}()
-	buf := make([]byte, 65535)
+	defer func() {
+		_ = control.SetReadDeadline(time.Now())
+		<-done
+	}()
+	bp := cliUDPBufPool.Get().(*[]byte)
+	defer cliUDPBufPool.Put(bp)
+	buf := *bp
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-done:
-			return nil
-		default:
-		}
 		n, src, err := udp.ReadFrom(buf)
 		if err != nil {
-			return err
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-done:
+				return nil
+			default:
+				return err
+			}
 		}
 		from, ok := src.(*net.UDPAddr)
 		if !ok || !from.IP.Equal(peerIP) {
@@ -445,23 +487,41 @@ func serveNW3UDP(ctx context.Context, client *vector.Client, control net.Conn, r
 			mu.Lock()
 			flows[key] = pc
 			mu.Unlock()
-			go func(pc net.Conn, src net.Addr, target wire.Target) {
-				rbuf := make([]byte, 65535)
+			readers.Add(1)
+			go func(key destKey, pc net.Conn, src net.Addr, target wire.Target) {
+				defer readers.Done()
+				rbp := cliUDPBufPool.Get().(*[]byte)
+				defer func() {
+					cliUDPBufPool.Put(rbp)
+					_ = pc.Close()
+					mu.Lock()
+					if flows[key] == pc {
+						delete(flows, key)
+					}
+					mu.Unlock()
+				}()
+				rbuf := *rbp
 				for {
 					n, err := pc.Read(rbuf)
 					if err != nil {
 						return
 					}
-					_ = n
 					pkt, err := encodeSocksUDP(target, rbuf[:n])
 					if err != nil {
 						continue
 					}
 					_, _ = udp.WriteTo(pkt, src)
 				}
-			}(pc, src, target)
+			}(key, pc, src, target)
 		}
-		_, _ = pc.Write(payload)
+		if _, err := pc.Write(payload); err != nil {
+			_ = pc.Close()
+			mu.Lock()
+			if flows[key] == pc {
+				delete(flows, key)
+			}
+			mu.Unlock()
+		}
 	}
 }
 

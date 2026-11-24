@@ -31,7 +31,7 @@ Nowhere 3 (default), shared key exactly 32 lowercase hex, morph defaults on:
   vector://<key>@<host>/udp:<port>?in=<socks-listen>
   egress://<key>@<host>:<port>                 QUIC
   egress://<key>@<host>/tcp:<port>            TLS
-  nowhere://<key>@<host>:<port>[?net=tcp|udp&morph=0|1]   fingerprint
+  nowhere://<key>@<host>:<port>[?net=tcp|udp&morph=0|1&cipher=chacha|aes]   fingerprint
 
 Nowhere 2, selected only by up/down/mux/next/socks. Morph defaults off:
   portal://<key>@<host>:<port>?socks=<proxy>
@@ -51,6 +51,7 @@ Nowhere 3 options:
   out=direct|egress|<socks>
                       Portal exit. Default: direct. egress accepts TLS and QUIC.
   morph=0|1           Default: 1. Peers must agree. Not negotiated.
+  cipher=chacha|aes   Morph algorithm. Default: chacha. Peers must agree.
   rate, etar          Upload and download caps in Mbps. Default: 0 (unlimited).
   sni, pin            Vector and Egress certificate checks.
   tls, crt, key       Portal certificate. tls=1 is generated. tls=2 needs files.
@@ -61,7 +62,7 @@ Portal keys of 32-64 lowercase hex, and free-form Vector keys.
 
 Environment:
   NOW_MORPH_TCP_PRELUDE          nw3 TCP Morph prelude: fade (default), full8, or low7.
-                                 A 3.3 Portal requires an authenticated prelude.
+                                 A 3.4 Portal requires an authenticated prelude.
                                  A tag mismatch is rejected. Peers do not negotiate
                                  the policy. nw2 stays full8 (default) or low7 and
                                  rejects fade.

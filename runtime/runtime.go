@@ -1,4 +1,4 @@
-// Package runtime loads the Nowhere 3.3 process settings.
+// Package runtime loads the Nowhere 3.4 process settings.
 //
 // Every duration is validated at startup, including settings the selected
 // role does not use. An invalid value fails with the variable name. An unset
@@ -195,9 +195,9 @@ func UDPPreludePolicy() (string, error) {
 
 var (
 	profiles = map[string]Profile{
-		"memory":     {Name: "memory", Stream: 4 << 20, Connection: 8 << 20, Send: 8 << 20},
-		"balanced":   {Name: "balanced", Stream: 8 << 20, Connection: 16 << 20, Send: 16 << 20},
-		"throughput": {Name: "throughput", Stream: 16 << 20, Connection: 32 << 20, Send: 32 << 20},
+		"memory":     {Name: "memory", Stream: 4 << 20, Connection: 16 << 20, Send: 8 << 20},
+		"balanced":   {Name: "balanced", Stream: 4 << 20, Connection: 16 << 20, Send: 16 << 20},
+		"throughput": {Name: "throughput", Stream: 4 << 20, Connection: 32 << 20, Send: 32 << 20},
 	}
 	errDuration = errors.New("invalid duration")
 	errInteger  = errors.New("invalid integer")

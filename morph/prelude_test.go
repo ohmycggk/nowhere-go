@@ -269,10 +269,10 @@ func TestReplayWindowAndFIFO(t *testing.T) {
 	if !filled.commit(replayCapacity+1, 1) {
 		t.Fatal("fifo insert failed")
 	}
-	if _, ok := filled.entries[1]; ok {
+	if _, ok := filled.index[1]; ok {
 		t.Fatal("oldest identity survived an update")
 	}
-	if _, ok := filled.entries[2]; !ok {
+	if _, ok := filled.index[2]; !ok {
 		t.Fatal("second identity was evicted")
 	}
 	if !filled.commit(1, 1) {

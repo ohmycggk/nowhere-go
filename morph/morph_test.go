@@ -508,16 +508,27 @@ func wrapTCPClientPolicy(conn net.Conn, keys Keys, policy preludePolicy) (net.Co
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return nil, err
 	}
+	readCipher, err := newTCPCipher(keys.Cipher, &keys.TCPS2C, &nonce)
+	if err != nil {
+		return nil, err
+	}
+	writeCipher, err := newTCPCipher(keys.Cipher, &keys.TCPC2S, &nonce)
+	if err != nil {
+		return nil, err
+	}
 	encodePrelude(keys.state, &prelude, &nonce, identity, counter)
 	pref := make([]byte, 0, preludeLen+nonceLen)
 	pref = append(pref, prelude[:]...)
 	pref = append(pref, nonce[:]...)
 	return &tcpConn{
-		Conn:      conn,
-		readKey:   keys.TCPS2C,
-		writeKey:  keys.TCPC2S,
-		nonce:     nonce,
-		writePref: pref,
+		Conn:        conn,
+		cipher:      keys.Cipher,
+		readKey:     keys.TCPS2C,
+		writeKey:    keys.TCPC2S,
+		nonce:       nonce,
+		readCipher:  readCipher,
+		writeCipher: writeCipher,
+		writePref:   pref,
 	}, nil
 }
 
