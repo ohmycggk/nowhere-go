@@ -27,6 +27,7 @@ type Config struct {
 	SharedKey    string
 	Morph        bool
 	MorphCipher  morph.Cipher
+	MorphGrade   morph.Grade
 	PortalAddr   string
 	TLS          *tls.Config
 	DialTCP      func(ctx context.Context, addr string) (net.Conn, error)
@@ -64,13 +65,8 @@ func New(cfg Config) (*Client, error) {
 	if !cfg.MorphCipher.Valid() {
 		return nil, errors.New("cipher must be chacha or aes")
 	}
-	creds, err := wire.NewCredentials(cfg.SharedKey)
-	if err != nil {
-		return nil, err
-	}
-	rt, err := runtime.Load(cfg.SharedKey, false)
-	if err != nil {
-		return nil, err
+	if !cfg.MorphGrade.Valid() {
+		return nil, errors.New("grade must be full or core")
 	}
 	if cfg.DialQUIC != nil {
 		if cfg.DialTCP != nil {
@@ -79,9 +75,22 @@ func New(cfg Config) (*Client, error) {
 	} else if cfg.DialTCP == nil || cfg.TLS == nil {
 		return nil, errors.New("nw3: vector requires exactly one carrier")
 	}
+	creds, err := wire.NewCredentials(cfg.SharedKey)
+	if err != nil {
+		return nil, err
+	}
+	rt, err := runtime.Load(cfg.SharedKey, cfg.Morph && cfg.DialQUIC != nil)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Morph && cfg.DialTCP != nil {
+		if err := morph.ValidateTCPPreludeEnv(); err != nil {
+			return nil, err
+		}
+	}
 	c := &Client{creds: creds, cfg: cfg, rt: rt, up: flowio.NewMbps(cfg.UploadMbps), down: flowio.NewMbps(cfg.DownloadMbps)}
 	if cfg.Morph {
-		keys, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+		keys, err := morph.DeriveWithOptions([]byte(cfg.SharedKey), cfg.MorphCipher, cfg.MorphGrade)
 		if err != nil {
 			return nil, err
 		}

@@ -90,7 +90,9 @@ func (c *tcpConn) readPlainUntil(buf []byte, n int) ([]byte, error) {
 			}
 			return nil, err
 		}
-		c.readCipher.xorKeyStream(next, next)
+		if err := c.unmaskRead(next); err != nil {
+			return nil, err
+		}
 		c.readOff += uint64(len(next))
 		buf = append(buf, next...)
 	}

@@ -1,0 +1,374 @@
+{
+  "protocol": "nw3",
+  "upstream_version": "3.5.0",
+  "upstream_commit": "000008d143d44688e9ed92363bd7fb1061f2cf06",
+  "upstream_path": "Nowhere/docs/grade.md",
+  "exporter_version": "nowhere-vector-export/6",
+  "notes": [
+    "Derived from Nowhere v3.5.0 Grade Extension (docs/grade.md) using the pinned shared key and nonce from cipher.json.",
+    "Core Morph TCP masks every 5-byte TLS record header and passes through only [23, 3, 3] payloads with big-endian length <= 18432 while advancing the absolute stream offset.",
+    "Core Morph UDP masks the entire datagram when the first byte has bit 0x80 set or length <= 41, and otherwise masks [0, 25) and [len-16, len) at their absolute datagram offsets."
+  ],
+  "shared_key_text": "0123456789abcdef0123456789abcdef",
+  "nonce_hex": "000102030405060708090a0b",
+  "tcp_cases": [
+    {
+      "id": "core-chacha-tcp_c2s",
+      "cipher": "chacha",
+      "direction": "tcp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          5
+        ],
+        [
+          21,
+          33
+        ],
+        [
+          33,
+          47
+        ],
+        [
+          47,
+          52
+        ],
+        [
+          52,
+          57
+        ]
+      ],
+      "plain_hex": "170303001005060708090a0b0c0d0e0f101112131417030100071a1b1c1d1e1f201603030009262728292a2b2c2d2e1703030000170303000b393a3b3c3d3e3f40414243",
+      "cipher_hex": "5b9c23091b05060708090a0b0c0d0e0f1011121314d9988a90d3618756f4ef915493f9d396c28e1c62aadee70e87e995277f611d4b557e3b4d393a3b3c3d3e3f40414243"
+    },
+    {
+      "id": "core-chacha-tcp_s2c",
+      "cipher": "chacha",
+      "direction": "tcp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          5
+        ],
+        [
+          21,
+          33
+        ],
+        [
+          33,
+          47
+        ],
+        [
+          47,
+          52
+        ],
+        [
+          52,
+          57
+        ]
+      ],
+      "plain_hex": "170303001005060708090a0b0c0d0e0f101112131417030100071a1b1c1d1e1f201603030009262728292a2b2c2d2e1703030000170303000b393a3b3c3d3e3f40414243",
+      "cipher_hex": "1e740fdd1205060708090a0b0c0d0e0f10111213140bf884e14f3d9ecb889769540f902cbc7682f300c476dbc4c2c5d1b0782c35484132aade393a3b3c3d3e3f40414243"
+    },
+    {
+      "id": "core-aes-tcp_c2s",
+      "cipher": "aes",
+      "direction": "tcp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          5
+        ],
+        [
+          21,
+          33
+        ],
+        [
+          33,
+          47
+        ],
+        [
+          47,
+          52
+        ],
+        [
+          52,
+          57
+        ]
+      ],
+      "plain_hex": "170303001005060708090a0b0c0d0e0f101112131417030100071a1b1c1d1e1f201603030009262728292a2b2c2d2e1703030000170303000b393a3b3c3d3e3f40414243",
+      "cipher_hex": "995bfba58105060708090a0b0c0d0e0f10111213140010c8935967a560fd155b7ee61913c72b5f2db8c291a3350df9aae532b8f1f8799dad22393a3b3c3d3e3f40414243"
+    },
+    {
+      "id": "core-aes-tcp_s2c",
+      "cipher": "aes",
+      "direction": "tcp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          5
+        ],
+        [
+          21,
+          33
+        ],
+        [
+          33,
+          47
+        ],
+        [
+          47,
+          52
+        ],
+        [
+          52,
+          57
+        ]
+      ],
+      "plain_hex": "170303001005060708090a0b0c0d0e0f101112131417030100071a1b1c1d1e1f201603030009262728292a2b2c2d2e1703030000170303000b393a3b3c3d3e3f40414243",
+      "cipher_hex": "00a68798ef05060708090a0b0c0d0e0f1011121314070b972922a1a59486b0f7668db9bcc66ce1f0ac7a5105a8a4137bea86ac489e6cebc698393a3b3c3d3e3f40414243"
+    }
+  ],
+  "udp_cases": [
+    {
+      "id": "core-chacha-udp_c2s-long-48",
+      "cipher": "chacha",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          48
+        ]
+      ],
+      "plain_hex": "c00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "cipher_hex": "def1b3158dc1c55b21fc990301578c5e3d9de35a1f55ea84fd1751925252b3d9477248b5bdc91e9737e59c851dc67dcd"
+    },
+    {
+      "id": "core-chacha-udp_c2s-short-41",
+      "cipher": "chacha",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          41
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728",
+      "cipher_hex": "5ef1b3158dc1c55b21fc990301578c5e3d9de35a1f55ea84fd1751925252b3d9477248b5bdc91e9737"
+    },
+    {
+      "id": "core-chacha-udp_c2s-short-42",
+      "cipher": "chacha",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          26,
+          42
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829",
+      "cipher_hex": "5ef1b3158dc1c55b21fc990301578c5e3d9de35a1f55ea84fd1951925252b3d9477248b5bdc91e9737e5"
+    },
+    {
+      "id": "core-chacha-udp_c2s-short-64",
+      "cipher": "chacha",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          48,
+          64
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "cipher_hex": "5ef1b3158dc1c55b21fc990301578c5e3d9de35a1f55ea84fd191a1b1c1d1e1f202122232425262728292a2b2c2d2e2fa76b908d40dc10ac20d986a7d0f96fa0"
+    },
+    {
+      "id": "core-chacha-udp_s2c-long-48",
+      "cipher": "chacha",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          48
+        ]
+      ],
+      "plain_hex": "c00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "cipher_hex": "deef56ba68e4efcc1d8d780d51fe282838ddcb2b4844f8463073428351905ea0680acf256ec21a91d89ee91d7de3cc85"
+    },
+    {
+      "id": "core-chacha-udp_s2c-short-41",
+      "cipher": "chacha",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          41
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728",
+      "cipher_hex": "5eef56ba68e4efcc1d8d780d51fe282838ddcb2b4844f8463073428351905ea0680acf256ec21a91d8"
+    },
+    {
+      "id": "core-chacha-udp_s2c-short-42",
+      "cipher": "chacha",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          26,
+          42
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829",
+      "cipher_hex": "5eef56ba68e4efcc1d8d780d51fe282838ddcb2b4844f8463019428351905ea0680acf256ec21a91d89e"
+    },
+    {
+      "id": "core-chacha-udp_s2c-short-64",
+      "cipher": "chacha",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          48,
+          64
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "cipher_hex": "5eef56ba68e4efcc1d8d780d51fe282838ddcb2b4844f84630191a1b1c1d1e1f202122232425262728292a2b2c2d2e2fb050f4727b43a267dc288d56e78b7230"
+    },
+    {
+      "id": "core-aes-udp_c2s-long-48",
+      "cipher": "aes",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          48
+        ]
+      ],
+      "plain_hex": "c00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "cipher_hex": "8378463322b3680c1d1ad62068c536c0fc5e1eac063187dcb2cf48d0ab609405aa9f4fea6b224d5e86897d9e5f63ce6b"
+    },
+    {
+      "id": "core-aes-udp_c2s-short-41",
+      "cipher": "aes",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          41
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728",
+      "cipher_hex": "0378463322b3680c1d1ad62068c536c0fc5e1eac063187dcb2cf48d0ab609405aa9f4fea6b224d5e86"
+    },
+    {
+      "id": "core-aes-udp_c2s-short-42",
+      "cipher": "aes",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          26,
+          42
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829",
+      "cipher_hex": "0378463322b3680c1d1ad62068c536c0fc5e1eac063187dcb21948d0ab609405aa9f4fea6b224d5e8689"
+    },
+    {
+      "id": "core-aes-udp_c2s-short-64",
+      "cipher": "aes",
+      "direction": "udp_c2s",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          48,
+          64
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "cipher_hex": "0378463322b3680c1d1ad62068c536c0fc5e1eac063187dcb2191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f4d6c50dcddeb6e219dbe55bb09ed1630"
+    },
+    {
+      "id": "core-aes-udp_s2c-long-48",
+      "cipher": "aes",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          48
+        ]
+      ],
+      "plain_hex": "c00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "cipher_hex": "e813cf0312ebdcc2beb4ff955b4667eb3ab282761d5d5ecc3b1b111d8531262cb6ea62744a2297ff6fa572bca0936239"
+    },
+    {
+      "id": "core-aes-udp_s2c-short-41",
+      "cipher": "aes",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          41
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728",
+      "cipher_hex": "6813cf0312ebdcc2beb4ff955b4667eb3ab282761d5d5ecc3b1b111d8531262cb6ea62744a2297ff6f"
+    },
+    {
+      "id": "core-aes-udp_s2c-short-42",
+      "cipher": "aes",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          26,
+          42
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526272829",
+      "cipher_hex": "6813cf0312ebdcc2beb4ff955b4667eb3ab282761d5d5ecc3b19111d8531262cb6ea62744a2297ff6fa5"
+    },
+    {
+      "id": "core-aes-udp_s2c-short-64",
+      "cipher": "aes",
+      "direction": "udp_s2c",
+      "masked_ranges": [
+        [
+          0,
+          25
+        ],
+        [
+          48,
+          64
+        ]
+      ],
+      "plain_hex": "400102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "cipher_hex": "6813cf0312ebdcc2beb4ff955b4667eb3ab282761d5d5ecc3b191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f90dd42a1f7e6efe74c2b857e02684a49"
+    }
+  ]
+}

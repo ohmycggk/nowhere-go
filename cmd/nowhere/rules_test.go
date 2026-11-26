@@ -101,6 +101,28 @@ func TestFingerprintShareLinkRejections(t *testing.T) {
 		err.Error() != "Nowhere share-link carrier paths support only tcp and udp" {
 		t.Fatalf("r4 suffix = %v", err)
 	}
+	if err := runFingerprint("nowhere://shortkey@relay.example:2000?morph=1"); err == nil {
+		t.Fatal("short nw3 key accepted on fingerprint")
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + ":pass@relay.example:2000?morph=1"); err == nil {
+		t.Fatal("password accepted on nw3 fingerprint")
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000"); err == nil ||
+		err.Error() != "fingerprint requires morph=0 or morph=1" {
+		t.Fatalf("missing morph = %v", err)
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?grade=core"); err == nil ||
+		err.Error() != "fingerprint requires morph=0 or morph=1" {
+		t.Fatalf("grade without morph = %v", err)
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?morph=2&grade=core"); err == nil ||
+		err.Error() != "morph must be 0 or 1" {
+		t.Fatalf("invalid morph = %v", err)
+	}
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?morph=0&grade=bad"); err == nil ||
+		err.Error() != "grade must be full or core" {
+		t.Fatalf("invalid grade = %v", err)
+	}
 	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?morph=0&cipher=AES"); err == nil ||
 		err.Error() != "cipher must be chacha or aes" {
 		t.Fatalf("invalid cipher = %v", err)
@@ -108,6 +130,11 @@ func TestFingerprintShareLinkRejections(t *testing.T) {
 	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?net=quic&morph=1"); err == nil ||
 		err.Error() != "share link net must be tcp or udp" {
 		t.Fatalf("invalid net = %v", err)
+	}
+	t.Setenv("NOW_MORPH_TCP_PRELUDE", "bad")
+	if err := runFingerprint("nowhere://" + testListenerKey + "@relay.example:2000?net=udp&morph=1&grade=core"); err == nil ||
+		!strings.Contains(err.Error(), "NOW_MORPH_TCP_PRELUDE") {
+		t.Fatalf("invalid tcp prelude on fingerprint = %v", err)
 	}
 }
 

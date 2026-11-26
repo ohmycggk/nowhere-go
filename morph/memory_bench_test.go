@@ -102,11 +102,15 @@ func TestTCPWriteChunkedLargePayload(t *testing.T) {
 	}
 }
 
-func BenchmarkMorphTCPWriteChaCha(b *testing.B) { benchmarkMorphTCPWrite(b, CipherChaCha) }
-func BenchmarkMorphTCPWriteAES(b *testing.B)    { benchmarkMorphTCPWrite(b, CipherAES) }
+func BenchmarkMorphTCPWriteChaCha(b *testing.B) { benchmarkMorphTCPWrite(b, CipherChaCha, GradeFull) }
+func BenchmarkMorphTCPWriteAES(b *testing.B)    { benchmarkMorphTCPWrite(b, CipherAES, GradeFull) }
+func BenchmarkMorphTCPWriteCoreChaCha(b *testing.B) {
+	benchmarkMorphTCPWrite(b, CipherChaCha, GradeCore)
+}
+func BenchmarkMorphTCPWriteCoreAES(b *testing.B) { benchmarkMorphTCPWrite(b, CipherAES, GradeCore) }
 
-func benchmarkMorphTCPWrite(b *testing.B, c Cipher) {
-	keys, err := DeriveWithCipher([]byte("0123456789abcdef0123456789abcdef"), c)
+func benchmarkMorphTCPWrite(b *testing.B, c Cipher, g Grade) {
+	keys, err := DeriveWithOptions([]byte("0123456789abcdef0123456789abcdef"), c, g)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -114,7 +118,11 @@ func benchmarkMorphTCPWrite(b *testing.B, c Cipher) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	payload := make([]byte, 16<<10)
+	// Format as a TLS 1.3 Application Data record so Core exercises its skip path.
+	const recordPayload = 16 << 10
+	payload := make([]byte, 5+recordPayload)
+	payload[0], payload[1], payload[2] = 23, 3, 3
+	payload[3], payload[4] = byte(recordPayload>>8), byte(recordPayload&0xff)
 	if _, err := conn.Write(payload); err != nil {
 		b.Fatal(err)
 	}
@@ -128,11 +136,15 @@ func benchmarkMorphTCPWrite(b *testing.B, c Cipher) {
 	}
 }
 
-func BenchmarkMorphUDPWriteChaCha(b *testing.B) { benchmarkMorphUDPWrite(b, CipherChaCha) }
-func BenchmarkMorphUDPWriteAES(b *testing.B)    { benchmarkMorphUDPWrite(b, CipherAES) }
+func BenchmarkMorphUDPWriteChaCha(b *testing.B) { benchmarkMorphUDPWrite(b, CipherChaCha, GradeFull) }
+func BenchmarkMorphUDPWriteAES(b *testing.B)    { benchmarkMorphUDPWrite(b, CipherAES, GradeFull) }
+func BenchmarkMorphUDPWriteCoreChaCha(b *testing.B) {
+	benchmarkMorphUDPWrite(b, CipherChaCha, GradeCore)
+}
+func BenchmarkMorphUDPWriteCoreAES(b *testing.B) { benchmarkMorphUDPWrite(b, CipherAES, GradeCore) }
 
-func benchmarkMorphUDPWrite(b *testing.B, c Cipher) {
-	keys, err := DeriveWithCipher([]byte("0123456789abcdef0123456789abcdef"), c)
+func benchmarkMorphUDPWrite(b *testing.B, c Cipher, g Grade) {
+	keys, err := DeriveWithOptions([]byte("0123456789abcdef0123456789abcdef"), c, g)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -141,6 +153,7 @@ func benchmarkMorphUDPWrite(b *testing.B, c Cipher) {
 		b.Fatal(err)
 	}
 	payload := make([]byte, 1200)
+	payload[0] = 0x40
 	if _, err := pc.WriteTo(payload, nil); err != nil {
 		b.Fatal(err)
 	}

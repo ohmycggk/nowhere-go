@@ -30,6 +30,11 @@ var cliUDPBufPool = sync.Pool{
 
 func loadNW3(cfg nw3Config) (runtime.Settings, error) {
 	morphUDP := cfg.morph && cfg.kind != nw3Portal && cfg.endpoint.hasUDP() && !cfg.endpoint.hasTCP()
+	if cfg.morph && cfg.kind != nw3Portal && cfg.endpoint.hasTCP() {
+		if err := morph.ValidateTCPPreludeEnv(); err != nil {
+			return runtime.Settings{}, err
+		}
+	}
 	return runtime.Load(cfg.key, morphUDP)
 }
 
@@ -73,6 +78,7 @@ func runNW3Portal(ctx context.Context, cfg nw3Config, log *logger) error {
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
 		MorphCipher:      cfg.cipher,
+		MorphGrade:       cfg.grade,
 		TLS:              tlsCfg,
 		Upstream:         upstream,
 		Egress:           cfg.exit == nw3ExitEgress,
@@ -149,6 +155,7 @@ func runNW3Egress(ctx context.Context, cfg nw3Config, log *logger) error {
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
 		MorphCipher:      cfg.cipher,
+		MorphGrade:       cfg.grade,
 		Upstream:         directUpstream{fd},
 		UploadMbps:       cfg.rate,
 		DownloadMbps:     cfg.etar,
@@ -177,6 +184,7 @@ func newNW3Vector(ctx context.Context, cfg nw3Config) (*vector.Client, error) {
 		SharedKey:        cfg.key,
 		Morph:            cfg.morph,
 		MorphCipher:      cfg.cipher,
+		MorphGrade:       cfg.grade,
 		UploadMbps:       cfg.rate,
 		DownloadMbps:     cfg.etar,
 		DatagramOverhead: nw3DatagramOverhead(cfg.morph),
@@ -206,7 +214,7 @@ func dialNW3Carrier(ctx context.Context, cfg nw3Config, tlsCfg *tls.Config, clie
 		return nil, err
 	}
 	if cfg.morph {
-		keys, kerr := morph.DeriveWithCipher([]byte(cfg.key), cfg.cipher)
+		keys, kerr := morph.DeriveWithOptions([]byte(cfg.key), cfg.cipher, cfg.grade)
 		if kerr != nil {
 			_ = pc.Close()
 			return nil, kerr
@@ -238,7 +246,7 @@ func listenNW3UDP(cfg nw3Config, tlsCfg *tls.Config, client bool, log *logger) (
 	var listeners []qio.Listener
 	for _, pc := range pcs {
 		if cfg.morph {
-			keys, kerr := morph.DeriveWithCipher([]byte(cfg.key), cfg.cipher)
+			keys, kerr := morph.DeriveWithOptions([]byte(cfg.key), cfg.cipher, cfg.grade)
 			if kerr != nil {
 				return nil, kerr
 			}

@@ -11,7 +11,7 @@ import (
 )
 
 // Cipher selects the Morph wire-masking algorithm. The zero value is
-// CipherChaCha (ChaCha20-IETF), matching the Nowhere 3.4 default.
+// CipherChaCha (ChaCha20-IETF), matching the Nowhere 3.5 default.
 type Cipher uint8
 
 const (
@@ -34,7 +34,7 @@ var (
 	errNotBootstrapped = errors.New("nw3: Morph TCP stream not bootstrapped")
 )
 
-// ParseCipher parses a Nowhere 3.4 Morph cipher option ("chacha" or "aes").
+// ParseCipher parses a Nowhere 3.5 Morph cipher option ("chacha" or "aes").
 // Values are case-sensitive; an empty or unrecognized string fails.
 func ParseCipher(value string) (Cipher, error) {
 	switch value {
@@ -59,7 +59,7 @@ func (c Cipher) String() string {
 	}
 }
 
-// Valid reports whether c is a supported Nowhere 3.4 Morph cipher.
+// Valid reports whether c is a supported Nowhere 3.5 Morph cipher.
 func (c Cipher) Valid() bool {
 	return c == CipherChaCha || c == CipherAES
 }
@@ -71,6 +71,8 @@ type tcpCipher struct {
 	offset uint64
 	block  cipher.Block
 	stream cipher.Stream
+	aesCtr [aes.BlockSize]byte
+	aesKS  [aes.BlockSize]byte
 }
 
 func newTCPCipher(kind Cipher, directionKey *[32]byte, nonce *[nonceLen]byte) (*tcpCipher, error) {
@@ -149,7 +151,93 @@ func (c *tcpCipher) xorKeyStream(dst, src []byte) {
 	c.offset += uint64(len(src))
 }
 
-// ApplyTCPAt XORs src into dst using the Nowhere 3.4 Morph TCP cipher at the
+func (c *tcpCipher) applyAt(offset uint64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if uint64(len(data)) > c.remaining(offset) {
+		return c.exhaustedErr()
+	}
+	if c.kind == CipherChaCha {
+		chacha20.XORKeyStreamAt(data, data, &c.key, &c.nonce, offset)
+		c.offset = offset + uint64(len(data))
+		return nil
+	}
+	if c.offset == offset {
+		c.xorKeyStream(data, data)
+		return nil
+	}
+	if len(data) <= 32 {
+		c.applyAESSmallAt(offset, data)
+		return nil
+	}
+	if err := c.seek(offset); err != nil {
+		return err
+	}
+	c.xorKeyStream(data, data)
+	return nil
+}
+
+func (c *tcpCipher) applyAESSmallAt(offset uint64, data []byte) {
+	var zeroIV [aes.BlockSize]byte
+	c.aesCtr = addCtr128BE(zeroIV, offset/aes.BlockSize)
+	skip := int(offset % aes.BlockSize)
+	for len(data) > 0 {
+		c.block.Encrypt(c.aesKS[:], c.aesCtr[:])
+		take := aes.BlockSize - skip
+		if take > len(data) {
+			take = len(data)
+		}
+		for i := 0; i < take; i++ {
+			data[i] ^= c.aesKS[skip+i]
+		}
+		data = data[take:]
+		skip = 0
+		incCtr128BE(&c.aesCtr)
+	}
+}
+
+func addCtr128BE(base [aes.BlockSize]byte, blocks uint64) [aes.BlockSize]byte {
+	lo := binary.BigEndian.Uint64(base[8:])
+	newLo := lo + blocks
+	binary.BigEndian.PutUint64(base[8:], newLo)
+	if newLo < lo {
+		hi := binary.BigEndian.Uint64(base[:8])
+		binary.BigEndian.PutUint64(base[:8], hi+1)
+	}
+	return base
+}
+
+func incCtr128BE(ctr *[aes.BlockSize]byte) {
+	for i := aes.BlockSize - 1; i >= 0; i-- {
+		ctr[i]++
+		if ctr[i] != 0 {
+			return
+		}
+	}
+}
+
+func aesCTRApplyAt(block cipher.Block, baseIV [aes.BlockSize]byte, offset uint64, dst, src []byte) {
+	ctr := addCtr128BE(baseIV, offset/aes.BlockSize)
+	skip := int(offset % aes.BlockSize)
+	var ks [aes.BlockSize]byte
+	for len(src) > 0 {
+		block.Encrypt(ks[:], ctr[:])
+		take := aes.BlockSize - skip
+		if take > len(src) {
+			take = len(src)
+		}
+		for i := 0; i < take; i++ {
+			dst[i] = src[i] ^ ks[skip+i]
+		}
+		dst = dst[take:]
+		src = src[take:]
+		skip = 0
+		incCtr128BE(&ctr)
+	}
+}
+
+// ApplyTCPAt XORs src into dst using the Nowhere 3.5 Morph TCP cipher at the
 // given byte offset. dst and src must have the same length and may alias.
 func ApplyTCPAt(c Cipher, directionKey *[32]byte, nonce *[12]byte, offset uint64, dst, src []byte) error {
 	if len(dst) != len(src) {
@@ -169,12 +257,23 @@ func ApplyTCPAt(c Cipher, directionKey *[32]byte, nonce *[12]byte, offset uint64
 	return nil
 }
 
-// ApplyDatagram XORs src into dst using the Nowhere 3.4 Morph UDP cipher for
-// one datagram and its 12-byte nonce. dst and src must have the same length and
-// may alias.
+// ApplyDatagram XORs src into dst using the Nowhere 3.5 Full Morph UDP cipher
+// for one datagram and its 12-byte nonce. dst and src must have the same
+// length and may alias.
 func ApplyDatagram(c Cipher, directionKey *[32]byte, nonce *[12]byte, dst, src []byte) error {
+	return ApplyDatagramWithGrade(c, GradeFull, false, directionKey, nonce, dst, src)
+}
+
+// ApplyDatagramWithGrade masks or unmasks one UDP datagram using the selected
+// Nowhere 3.5 Morph cipher and grade. dst and src must have the same length
+// and may alias. Set opening to false when sealing plaintext and true when
+// recovering ciphertext.
+func ApplyDatagramWithGrade(c Cipher, g Grade, opening bool, directionKey *[32]byte, nonce *[12]byte, dst, src []byte) error {
 	if len(dst) != len(src) {
 		return errLengthMismatch
+	}
+	if !g.Valid() {
+		return errInvalidGrade
 	}
 	var block cipher.Block
 	switch c {
@@ -188,19 +287,47 @@ func ApplyDatagram(c Cipher, directionKey *[32]byte, nonce *[12]byte, dst, src [
 	default:
 		return errInvalidCipher
 	}
-	applyDatagramWithBlock(c, directionKey, block, nonce, dst, src)
+	applyDatagramWithBlock(c, g, opening, directionKey, block, nonce, dst, src)
 	return nil
 }
 
-func applyDatagramWithBlock(c Cipher, directionKey *[32]byte, block cipher.Block, nonce *[nonceLen]byte, dst, src []byte) {
+func applyDatagramWithBlock(c Cipher, g Grade, opening bool, directionKey *[32]byte, block cipher.Block, nonce *[nonceLen]byte, dst, src []byte) {
 	if len(src) == 0 {
 		return
 	}
-	if c == CipherAES {
-		var iv [aes.BlockSize]byte
-		copy(iv[:nonceLen], nonce[:])
-		cipher.NewCTR(block, iv[:]).XORKeyStream(dst, src)
+	if g == GradeFull || len(src) <= coreUDPShortThreshold || (!opening && src[0]&coreUDPLongHeaderMask != 0) {
+		applyDatagramRange(c, directionKey, block, nonce, 0, dst, src)
 		return
 	}
-	chacha20.XORKeyStreamAt(dst, src, directionKey, nonce, 0)
+	applyDatagramRange(c, directionKey, block, nonce, 0, dst[:coreUDPHeadMaskLen], src[:coreUDPHeadMaskLen])
+	if opening && dst[0]&coreUDPLongHeaderMask != 0 {
+		applyDatagramRange(c, directionKey, block, nonce, coreUDPHeadMaskLen, dst[coreUDPHeadMaskLen:], src[coreUDPHeadMaskLen:])
+		return
+	}
+	tail := len(src) - coreUDPTailMaskLen
+	copy(dst[coreUDPHeadMaskLen:tail], src[coreUDPHeadMaskLen:tail])
+	applyDatagramRange(c, directionKey, block, nonce, uint64(tail), dst[tail:], src[tail:])
+}
+
+func applyDatagramRange(c Cipher, directionKey *[32]byte, block cipher.Block, nonce *[nonceLen]byte, offset uint64, dst, src []byte) {
+	if len(src) == 0 {
+		return
+	}
+	if c == CipherChaCha {
+		chacha20.XORKeyStreamAt(dst, src, directionKey, nonce, offset)
+		return
+	}
+	var baseIV [aes.BlockSize]byte
+	copy(baseIV[:nonceLen], nonce[:])
+	if len(src) <= 32 {
+		aesCTRApplyAt(block, baseIV, offset, dst, src)
+		return
+	}
+	ctr := addCtr128BE(baseIV, offset/aes.BlockSize)
+	stream := cipher.NewCTR(block, ctr[:])
+	if skip := int(offset % aes.BlockSize); skip > 0 {
+		var discard [aes.BlockSize]byte
+		stream.XORKeyStream(discard[:skip], discard[:skip])
+	}
+	stream.XORKeyStream(dst, src)
 }

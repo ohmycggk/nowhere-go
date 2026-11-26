@@ -30,6 +30,7 @@ type Config struct {
 	SharedKey   string
 	Morph       bool
 	MorphCipher morph.Cipher
+	MorphGrade  morph.Grade
 	PortalAddr  string
 	TLS         *tls.Config
 	DialTCP     func(ctx context.Context, addr string) (net.Conn, error)
@@ -57,6 +58,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if !cfg.MorphCipher.Valid() {
 		return errors.New("cipher must be chacha or aes")
 	}
+	if !cfg.MorphGrade.Valid() {
+		return errors.New("grade must be full or core")
+	}
 	if cfg.Upstream == nil {
 		return errors.New("nw3: egress requires an upstream")
 	}
@@ -77,7 +81,10 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		var keys *morph.Keys
 		if cfg.Morph {
-			k, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+			if err := morph.ValidateTCPPreludeEnv(); err != nil {
+				return err
+			}
+			k, err := morph.DeriveWithOptions([]byte(cfg.SharedKey), cfg.MorphCipher, cfg.MorphGrade)
 			if err != nil {
 				return err
 			}

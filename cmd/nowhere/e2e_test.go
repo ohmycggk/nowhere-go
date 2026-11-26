@@ -48,8 +48,11 @@ func TestURLEdition(t *testing.T) {
 	if _, err := urlEdition("vector://" + key + "@127.0.0.1:2000?up=tcp&cipher=aes&socks=:1080"); err == nil {
 		t.Fatal("nw2 and cipher mixed options accepted")
 	}
+	if _, err := urlEdition("vector://" + key + "@127.0.0.1:2000?up=tcp&grade=core&socks=:1080"); err == nil {
+		t.Fatal("nw2 and grade mixed options accepted")
+	}
 	cfg, err := parseNW3("portal://"+key+"@127.0.0.1:2000", true)
-	if err != nil || !cfg.morph || cfg.cipher != morph.CipherChaCha || cfg.endpoint.udp == nil {
+	if err != nil || !cfg.morph || cfg.grade != morph.GradeFull || cfg.cipher != morph.CipherChaCha || cfg.endpoint.udp == nil {
 		t.Fatalf("default nw3 portal %+v %v", cfg, err)
 	}
 	if len(mustServerALPN(t, cfg)) != 1 || mustServerALPN(t, cfg)[0] != nw3wire.ALPN {
@@ -62,21 +65,31 @@ func TestParseNW3CipherLiteralFirstDuplicateAndDisabledValidation(t *testing.T) 
 	parse := func(query string) (nw3Config, error) {
 		return parseNW3("vector://"+key+"@127.0.0.1:2000?in=127.0.0.1:1080&"+query, true)
 	}
-	aesCfg, err := parse("%63ipher=chacha&cipher=%61es&cipher=%ZZ")
+	coreAESCfg, err := parse("%67rade=full&grade=%63ore&grade=%ZZ&%63ipher=chacha&cipher=%61es&cipher=%ZZ")
 	if err != nil {
-		t.Fatalf("literal cipher query failed: %v", err)
+		t.Fatalf("literal grade/cipher query failed: %v", err)
 	}
-	if !aesCfg.morph || aesCfg.cipher != morph.CipherAES {
-		t.Fatalf("got morph=%v cipher=%v, want true/aes", aesCfg.morph, aesCfg.cipher)
+	if !coreAESCfg.morph || coreAESCfg.grade != morph.GradeCore || coreAESCfg.cipher != morph.CipherAES {
+		t.Fatalf("got morph=%v grade=%v cipher=%v, want true/core/aes", coreAESCfg.morph, coreAESCfg.grade, coreAESCfg.cipher)
 	}
-	disabledCfg, err := parse("morph=0&cipher=aes")
+	disabledCfg, err := parse("morph=0&grade=core&cipher=aes")
 	if err != nil {
-		t.Fatalf("morph=0&cipher=aes failed: %v", err)
+		t.Fatalf("morph=0&grade=core&cipher=aes failed: %v", err)
 	}
 	if disabledCfg.morph {
 		t.Fatal("morph=0 unexpectedly enabled morph")
 	}
 	for _, query := range []string{
+		"morph=2&grade=core",
+		"morph=2&morph=1",
+		"morph=",
+		"morph=0&grade=CORE",
+		"morph=0&grade=bad",
+		"grade",
+		"grade=&grade=core",
+		"grade=%FF",
+		"grade=%ZZ",
+		"grade=%2563ore",
 		"morph=0&cipher=AES",
 		"cipher",
 		"cipher=&cipher=aes",
@@ -88,15 +101,114 @@ func TestParseNW3CipherLiteralFirstDuplicateAndDisabledValidation(t *testing.T) 
 		}
 	}
 	// Role-specific unknown options with invalid values or percent-encoding are ignored.
-	if _, err := parseNW3("portal://"+key+"@127.0.0.1:2000?in=%ZZ&pin=wrong&cipher=aes", true); err != nil {
+	if _, err := parseNW3("portal://"+key+"@127.0.0.1:2000?in=%ZZ&pin=wrong&grade=core&cipher=aes", true); err != nil {
 		t.Fatalf("portal rejected unknown options: %v", err)
 	}
-	if _, err := parseNW3("vector://"+key+"@127.0.0.1:2000?in=127.0.0.1:1080&out=%ZZ&dial=bad&cipher=aes", true); err != nil {
+	if _, err := parseNW3("vector://"+key+"@127.0.0.1:2000?in=127.0.0.1:1080&out=%ZZ&dial=bad&grade=core&cipher=aes", true); err != nil {
 		t.Fatalf("vector rejected unknown options: %v", err)
 	}
-	if _, err := parseNW3("egress://"+key+"@127.0.0.1:2000?in=%ZZ&out=%ZZ&cipher=aes", true); err != nil {
+	if _, err := parseNW3("egress://"+key+"@127.0.0.1:2000?in=%ZZ&out=%ZZ&grade=core&cipher=aes", true); err != nil {
 		t.Fatalf("egress rejected unknown options: %v", err)
 	}
+	// Explicit empty in= (even for probe) and empty out= must be rejected.
+	if _, err := parseNW3("vector://"+key+"@127.0.0.1:2000?in=&morph=1", false); err == nil {
+		t.Fatal("probe accepted explicit empty in=")
+	}
+	if _, err := parseNW3("portal://"+key+"@127.0.0.1:2000?out=", true); err == nil {
+		t.Fatal("portal accepted explicit empty out=")
+	}
+}
+
+func TestNW3PreludeEnvValidationFollowsRoleAndCarrier(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+
+	t.Run("invalid tcp prelude affects only morph tcp clients", func(t *testing.T) {
+		t.Setenv("NOW_MORPH_TCP_PRELUDE", "bad")
+		t.Setenv(runtime.EnvMorphUDPPrelude, "fade")
+
+		portalCfg, err := parseNW3("portal://"+key+"@127.0.0.1:2000", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(portalCfg); err != nil {
+			t.Fatalf("portal rejected invalid client TCP prelude: %v", err)
+		}
+		vecOff, err := parseNW3("vector://"+key+"@127.0.0.1/tcp:2000?in=127.0.0.1:1080&morph=0&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecOff); err != nil {
+			t.Fatalf("morph=0 vector rejected invalid TCP prelude: %v", err)
+		}
+		vecUDP, err := parseNW3("vector://"+key+"@127.0.0.1/udp:2000?in=127.0.0.1:1080&morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecUDP); err != nil {
+			t.Fatalf("udp vector rejected invalid TCP prelude: %v", err)
+		}
+		vecTCP, err := parseNW3("vector://"+key+"@127.0.0.1/tcp:2000?in=127.0.0.1:1080&morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecTCP); err == nil {
+			t.Fatal("tcp vector accepted invalid TCP prelude")
+		}
+		if _, err := newNW3Vector(context.Background(), vecTCP); err == nil {
+			t.Fatal("newNW3Vector accepted invalid TCP prelude")
+		}
+		egTCP, err := parseNW3("egress://"+key+"@127.0.0.1/tcp:2000?morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(egTCP); err == nil {
+			t.Fatal("tcp egress accepted invalid TCP prelude")
+		}
+	})
+
+	t.Run("invalid udp prelude affects only morph udp clients", func(t *testing.T) {
+		t.Setenv("NOW_MORPH_TCP_PRELUDE", "fade")
+		t.Setenv(runtime.EnvMorphUDPPrelude, "bad")
+
+		portalCfg, err := parseNW3("portal://"+key+"@127.0.0.1:2000", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(portalCfg); err != nil {
+			t.Fatalf("portal rejected invalid client UDP prelude: %v", err)
+		}
+		vecTCP, err := parseNW3("vector://"+key+"@127.0.0.1/tcp:2000?in=127.0.0.1:1080&morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecTCP); err != nil {
+			t.Fatalf("tcp vector rejected invalid UDP prelude: %v", err)
+		}
+		vecUDPOff, err := parseNW3("vector://"+key+"@127.0.0.1/udp:2000?in=127.0.0.1:1080&morph=0&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecUDPOff); err != nil {
+			t.Fatalf("morph=0 udp vector rejected invalid UDP prelude: %v", err)
+		}
+		vecUDP, err := parseNW3("vector://"+key+"@127.0.0.1/udp:2000?in=127.0.0.1:1080&morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(vecUDP); err == nil {
+			t.Fatal("udp vector accepted invalid UDP prelude")
+		}
+		if _, err := newNW3Vector(context.Background(), vecUDP); err == nil {
+			t.Fatal("newNW3Vector udp accepted invalid UDP prelude")
+		}
+		egUDP, err := parseNW3("egress://"+key+"@127.0.0.1/udp:2000?morph=1&grade=core", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadNW3(egUDP); err == nil {
+			t.Fatal("udp egress accepted invalid UDP prelude")
+		}
+	})
 }
 
 func TestMorphQUICAndEgressAESAndMismatch(t *testing.T) {
@@ -253,39 +365,247 @@ func TestMorphQUICAndEgressAESAndMismatch(t *testing.T) {
 	}
 }
 
+func TestMorphQUICAndEgressCoreGradeAndMismatch(t *testing.T) {
+	key := "0123456789abcdef0123456789abcdef"
+	cert := testLeaf(t)
+	for _, suite := range []morph.Cipher{morph.CipherChaCha, morph.CipherAES} {
+		t.Run(suite.String(), func(t *testing.T) {
+			coreKeys, err := morph.DeriveWithOptions([]byte(key), suite, morph.GradeCore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fullKeys, err := morph.DeriveWithOptions([]byte(key), suite, morph.GradeFull)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pc.Close()
+			packet, err := morph.WrapPacketConn(pc, coreKeys, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ln, err := listenNW3QUIC(packet, &tls.Config{Certificates: []tls.Certificate{cert}}, 0, testProfile(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			srv, err := portal.New(portal.Config{
+				SharedKey:        key,
+				Morph:            true,
+				MorphCipher:      suite,
+				MorphGrade:       morph.GradeCore,
+				TLS:              &tls.Config{Certificates: []tls.Certificate{cert}},
+				Egress:           true,
+				DatagramOverhead: nw3DatagramOverhead(true),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = srv.ServeQUIC(ctx, ln) }()
+
+			echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer echoLn.Close()
+			go func() {
+				for {
+					c, err := echoLn.Accept()
+					if err != nil {
+						return
+					}
+					go func(c net.Conn) { defer c.Close(); _, _ = io.Copy(c, c) }(c)
+				}
+			}()
+
+			dialWithKeys := func(keys morph.Keys) func(context.Context) (qio.Conn, error) {
+				return func(ctx context.Context) (qio.Conn, error) {
+					raw, err := net.ListenPacket("udp", "127.0.0.1:0")
+					if err != nil {
+						return nil, err
+					}
+					wrapped, err := morph.WrapPacketConn(raw, keys, true)
+					if err != nil {
+						_ = raw.Close()
+						return nil, err
+					}
+					conn, err := dialNW3QUIC(ctx, wrapped, pc.LocalAddr().String(), &tls.Config{
+						InsecureSkipVerify: true,
+						ServerName:         "nowhere",
+						NextProtos:         []string{nw3wire.ALPN},
+					}, 0, testProfile(), true)
+					if err != nil {
+						_ = wrapped.Close()
+						return nil, err
+					}
+					return conn, nil
+				}
+			}
+
+			egCtx, egCancel := context.WithCancel(context.Background())
+			defer egCancel()
+			go func() {
+				_ = egress.Run(egCtx, egress.Config{
+					SharedKey:        key,
+					Morph:            true,
+					MorphCipher:      suite,
+					MorphGrade:       morph.GradeCore,
+					DialQUIC:         dialWithKeys(coreKeys),
+					Upstream:         portal.Direct{},
+					DatagramOverhead: nw3DatagramOverhead(true),
+				})
+			}()
+
+			coreClient, err := vector.New(vector.Config{
+				SharedKey:        key,
+				Morph:            true,
+				MorphCipher:      suite,
+				MorphGrade:       morph.GradeCore,
+				DialQUIC:         dialWithKeys(coreKeys),
+				DatagramOverhead: nw3DatagramOverhead(true),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer coreClient.Close()
+
+			host, port, _ := net.SplitHostPort(echoLn.Addr().String())
+			target, err := nw3wire.NewIPTarget(netip.MustParseAddr(host), parsePort(port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var conn net.Conn
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				flowCtx, cancelFlow := context.WithTimeout(context.Background(), 2*time.Second)
+				conn, err = coreClient.OpenTCP(flowCtx, target)
+				cancelFlow()
+				if err == nil || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			if err != nil {
+				t.Fatalf("core quic egress flow: %v", err)
+			}
+			msg := bytes.Repeat([]byte("core-quic!"), 32)
+			if _, err := conn.Write(msg); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, len(msg))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(buf, msg) {
+				t.Fatalf("core quic payload mismatch")
+			}
+			_ = conn.Close()
+
+			// Full-grade client cannot open a flow over a Core-grade QUIC Portal.
+			fullClient, err := vector.New(vector.Config{
+				SharedKey:        key,
+				Morph:            true,
+				MorphCipher:      suite,
+				MorphGrade:       morph.GradeFull,
+				DialQUIC:         dialWithKeys(fullKeys),
+				DatagramOverhead: nw3DatagramOverhead(true),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer fullClient.Close()
+			badCtx, cancelBad := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancelBad()
+			if badConn, err := fullClient.OpenTCP(badCtx, target); err == nil {
+				// Even if QUIC handshake succeeded on long-header packets, 1-RTT traffic (>41B) diverges.
+				_ = badConn.SetDeadline(time.Now().Add(300 * time.Millisecond))
+				_, werr := badConn.Write(msg)
+				rbuf := make([]byte, len(msg))
+				_, rerr := io.ReadFull(badConn, rbuf)
+				_ = badConn.Close()
+				if werr == nil && rerr == nil && bytes.Equal(rbuf, msg) {
+					t.Fatal("full client unexpectedly completed flow on core quic portal")
+				}
+			}
+		})
+	}
+}
+
 func TestFingerprintAESCipher(t *testing.T) {
 	t.Setenv(runtime.EnvHandshakeTimeout, "300ms")
 	key := "0123456789abcdef0123456789abcdef"
 	cert := testLeaf(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	srv, err := portal.New(portal.Config{
-		SharedKey:   key,
-		Morph:       true,
-		MorphCipher: morph.CipherAES,
-		TLS:         &tls.Config{Certificates: []tls.Certificate{cert}},
-		Upstream:    portal.Direct{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = srv.Serve(ctx, ln) }()
+	for _, tc := range []struct {
+		name      string
+		cipher    morph.Cipher
+		grade     morph.Grade
+		badCipher morph.Cipher
+		badGrade  morph.Grade
+	}{
+		{
+			name:      "full_aes",
+			cipher:    morph.CipherAES,
+			grade:     morph.GradeFull,
+			badCipher: morph.CipherChaCha,
+			badGrade:  morph.GradeCore,
+		},
+		{
+			name:      "core_aes",
+			cipher:    morph.CipherAES,
+			grade:     morph.GradeCore,
+			badCipher: morph.CipherChaCha,
+			badGrade:  morph.GradeFull,
+		},
+		{
+			name:      "core_chacha",
+			cipher:    morph.CipherChaCha,
+			grade:     morph.GradeCore,
+			badCipher: morph.CipherAES,
+			badGrade:  morph.GradeFull,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			srv, err := portal.New(portal.Config{
+				SharedKey:   key,
+				Morph:       true,
+				MorphCipher: tc.cipher,
+				MorphGrade:  tc.grade,
+				TLS:         &tls.Config{Certificates: []tls.Certificate{cert}},
+				Upstream:    portal.Direct{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = srv.Serve(ctx, ln) }()
 
-	want := wire.LeafCertificateSHA256Hex(cert.Certificate[0])
-	got, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, morph.CipherAES)
-	if err != nil {
-		t.Fatalf("fingerprint with aes: %v", err)
-	}
-	if got != want {
-		t.Fatalf("fingerprint = %s, want %s", got, want)
-	}
-	if _, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, morph.CipherChaCha); err == nil {
-		t.Fatal("fingerprint with mismatched chacha cipher unexpectedly succeeded")
+			want := wire.LeafCertificateSHA256Hex(cert.Certificate[0])
+			got, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, tc.cipher, tc.grade)
+			if err != nil {
+				t.Fatalf("fingerprint %s: %v", tc.name, err)
+			}
+			if got != want {
+				t.Fatalf("fingerprint = %s, want %s", got, want)
+			}
+			if _, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, tc.badCipher, tc.grade); err == nil {
+				t.Fatalf("fingerprint with mismatched cipher unexpectedly succeeded for %s", tc.name)
+			}
+			if _, err := fetchCertificateFingerprint(ln.Addr().String(), key, "127.0.0.1", "nowhere", true, true, tc.cipher, tc.badGrade); err == nil {
+				t.Fatalf("fingerprint with mismatched grade unexpectedly succeeded for %s", tc.name)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,34 @@ and all clients.
 
 ### Changed
 
+- Protocol baseline is Nowhere 3.5.0 (`000008d143d44688e9ed92363bd7fb1061f2cf06`).
+  NW3 Core framing, ALPN `nw3`, AuthFrame, FlowStart, SetupResult, and the
+  authenticated TCP/UDP Prelude envelopes are unchanged.
+- Added the Morph Grade Extension (`morph.Grade`: `GradeFull` default,
+  `GradeCore` for Core Morph) across `morph`, `portal`, `vector`, `egress`, and
+  `cmd/nowhere` (`grade=full|core` independent of `morph=0|1` and
+  `cipher=chacha|aes`):
+  - Core Morph TCP masks every 5-byte TLS Record header and passes through only
+    outer content type `23` with legacy version `0x0303` and big-endian payload
+    length `<= 18432`, advancing absolute stream offsets (and Cipher limits)
+    across skipped bytes and committing only accepted prefixes on partial writes.
+  - Core Morph QUIC/UDP masks the entire datagram when the high bit (`0x80`) is
+    set or length is `<= 41` bytes, and masks `[0, 25)` and `[len-16, len)` at
+    absolute datagram offsets for short headers over 41 bytes.
+- Aligned `cmd/nowhere` and client constructors with Nowhere 3.5.0 validation:
+  `grade` and `cipher` validate even when `morph=0`, `fingerprint` requires an
+  explicit `morph=0` or `morph=1` on `nw3` share links, and Morph-enabled
+  TCP/UDP clients validate `NOW_MORPH_TCP_PRELUDE` / `NOW_MORPH_UDP_PRELUDE`
+  according to their active carrier before network access.
+- Added Core Morph conformance vectors in `testdata/vectors/nw3/grade.json`,
+  wired `checkNW3Grade` into `nowhere-check`, and regenerated `UPSTREAM.lock`
+  (`protocol_sha256` and `vector_tree_sha256`).
+- The CLI version is 3.5.0.
+
+## v3.4.0 - 2026-11-25
+
+### Changed
+
 - Protocol baseline is Nowhere 3.4.0 (`000001c866b0c9fada350c84bdc11702473564a6`).
   NW3 Core framing, ALPN `nw3`, AuthFrame, FlowStart, SetupResult, and the
   authenticated TCP/UDP Prelude envelopes are unchanged.

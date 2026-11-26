@@ -49,21 +49,23 @@ var udpMaskPool = sync.Pool{
 
 // Keys are the directional Morph outputs for one shared key.
 //
-// Copies made from the same Derive or DeriveWithCipher call share one Vector
-// prelude identity and one Portal replay registry. Keys constructed field by
-// field have neither and cannot send or accept an authenticated Morph TCP
-// prelude. The zero value of Cipher selects ChaCha20-IETF.
+// Copies made from the same Derive, DeriveWithCipher, or DeriveWithOptions call
+// share one Vector prelude identity and one Portal replay registry. Keys
+// constructed field by field have neither and cannot send or accept an
+// authenticated Morph TCP prelude. The zero values of Cipher and Grade select
+// ChaCha20-IETF and Full Morph.
 type Keys struct {
 	TCPC2S [32]byte
 	TCPS2C [32]byte
 	UDPC2S [32]byte
 	UDPS2C [32]byte
 	Cipher Cipher
+	Grade  Grade
 	state  *preludeState
 }
 
-// Derive builds Morph keys using the default ChaCha20-IETF cipher. sharedKey is
-// the same raw text used for authentication.
+// Derive builds Morph keys using the default ChaCha20-IETF cipher and Full
+// Morph grade. sharedKey is the same raw text used for authentication.
 func Derive(sharedKey []byte) Keys {
 	root := hmacSHA256([]byte(morphRootSalt), sharedKey)
 	return Keys{
@@ -72,17 +74,29 @@ func Derive(sharedKey []byte) Keys {
 		UDPC2S: expand(root, "udp c2s"),
 		UDPS2C: expand(root, "udp s2c"),
 		Cipher: CipherChaCha,
+		Grade:  GradeFull,
 		state:  newPreludeState(root),
 	}
 }
 
-// DeriveWithCipher builds Morph keys using the selected Nowhere 3.4 cipher.
+// DeriveWithCipher builds Morph keys using the selected cipher and Full Morph
+// grade.
 func DeriveWithCipher(sharedKey []byte, c Cipher) (Keys, error) {
+	return DeriveWithOptions(sharedKey, c, GradeFull)
+}
+
+// DeriveWithOptions builds Morph keys using the selected Nowhere 3.5 cipher
+// and masking grade.
+func DeriveWithOptions(sharedKey []byte, c Cipher, g Grade) (Keys, error) {
 	if !c.Valid() {
 		return Keys{}, errInvalidCipher
 	}
+	if !g.Valid() {
+		return Keys{}, errInvalidGrade
+	}
 	keys := Derive(sharedKey)
 	keys.Cipher = c
+	keys.Grade = g
 	return keys, nil
 }
 
@@ -109,6 +123,13 @@ const (
 	preludeFull8
 	preludeLow7
 )
+
+// ValidateTCPPreludeEnv validates NOW_MORPH_TCP_PRELUDE without consuming a
+// prelude counter. Unset selects the default fade policy.
+func ValidateTCPPreludeEnv() error {
+	_, err := preludePolicyFromEnv()
+	return err
+}
 
 func preludePolicyFromEnv() (preludePolicy, error) {
 	value, ok := os.LookupEnv(preludeEnv)
@@ -202,6 +223,9 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 	if !keys.Cipher.Valid() {
 		return nil, errInvalidCipher
 	}
+	if !keys.Grade.Valid() {
+		return nil, errInvalidGrade
+	}
 	identity, counter, err := keys.state.allocate()
 	if err != nil {
 		return nil, err
@@ -233,6 +257,7 @@ func WrapTCPClient(conn net.Conn, keys Keys) (net.Conn, error) {
 	return &tcpConn{
 		Conn:        conn,
 		cipher:      keys.Cipher,
+		grade:       keys.Grade,
 		readKey:     keys.TCPS2C,
 		writeKey:    keys.TCPC2S,
 		nonce:       nonce,
@@ -252,6 +277,7 @@ func WrapTCPServer(conn net.Conn, keys Keys) net.Conn {
 	return &tcpConn{
 		Conn:     conn,
 		cipher:   keys.Cipher,
+		grade:    keys.Grade,
 		readKey:  keys.TCPC2S,
 		writeKey: keys.TCPS2C,
 		server:   true,
@@ -287,10 +313,13 @@ func ReleaseAuthenticated(conn net.Conn, deadline time.Time) error {
 type tcpConn struct {
 	net.Conn
 	cipher            Cipher
+	grade             Grade
 	readKey, writeKey [32]byte
 	nonce             [nonceLen]byte
 	readCipher        *tcpCipher
 	writeCipher       *tcpCipher
+	readRecord        recordState
+	writeRecord       recordState
 	readOff, writeOff uint64
 	writePref         []byte
 	server            bool
@@ -299,6 +328,14 @@ type tcpConn struct {
 	bootstrapped      bool
 	bootErr           error
 	readMu, writeMu   sync.Mutex
+}
+
+func (c *tcpConn) unmaskRead(data []byte) error {
+	if c.grade == GradeCore {
+		return c.readRecord.apply(c.readCipher, c.readOff, data, true)
+	}
+	c.readCipher.xorKeyStream(data, data)
+	return nil
 }
 
 func (c *tcpConn) Read(p []byte) (int, error) {
@@ -333,7 +370,9 @@ func (c *tcpConn) Read(p []byte) (int, error) {
 	}
 	n, err := c.Conn.Read(p)
 	if n > 0 {
-		c.readCipher.xorKeyStream(p[:n], p[:n])
+		if applyErr := c.unmaskRead(p[:n]); applyErr != nil {
+			return 0, applyErr
+		}
 		c.readOff += uint64(n)
 	}
 	return n, err
@@ -360,6 +399,9 @@ func (c *tcpConn) bootstrapOnce() error {
 	}
 	if !c.cipher.Valid() {
 		return errInvalidCipher
+	}
+	if !c.grade.Valid() {
+		return errInvalidGrade
 	}
 	if err := setLinger(c.Conn, 0); err != nil {
 		return err
@@ -440,7 +482,33 @@ func (c *tcpConn) Write(p []byte) (int, error) {
 			chunk = len(scratch)
 		}
 		buf := scratch[:chunk]
-		c.writeCipher.xorKeyStream(buf, p[written:written+chunk])
+		plain := p[written : written+chunk]
+		if c.grade == GradeCore {
+			copy(buf, plain)
+			nextRecord := c.writeRecord
+			if err := nextRecord.apply(c.writeCipher, c.writeOff, buf, false); err != nil {
+				return written, err
+			}
+			n, err := c.Conn.Write(buf)
+			if n == chunk {
+				c.writeRecord = nextRecord
+				c.writeOff += uint64(n)
+				written += n
+				if err != nil {
+					return written, err
+				}
+				continue
+			}
+			if n > 0 {
+				c.writeRecord.advanceSlice(plain[:n])
+				c.writeOff += uint64(n)
+				written += n
+			} else if err == nil {
+				err = io.ErrShortWrite
+			}
+			return written, err
+		}
+		c.writeCipher.xorKeyStream(buf, plain)
 		n, err := c.Conn.Write(buf)
 		if n > 0 {
 			c.writeOff += uint64(n)
@@ -448,6 +516,9 @@ func (c *tcpConn) Write(p []byte) (int, error) {
 		}
 		if n != chunk {
 			_ = c.writeCipher.seek(c.writeOff)
+			if n == 0 && err == nil {
+				err = io.ErrShortWrite
+			}
 			return written, err
 		}
 		if err != nil {
@@ -488,6 +559,9 @@ func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) (net.PacketConn, 
 	if !keys.Cipher.Valid() {
 		return nil, errInvalidCipher
 	}
+	if !keys.Grade.Valid() {
+		return nil, errInvalidGrade
+	}
 	tx, rx := keys.UDPC2S, keys.UDPS2C
 	if !client {
 		tx, rx = keys.UDPS2C, keys.UDPC2S
@@ -507,6 +581,7 @@ func WrapPacketConn(pc net.PacketConn, keys Keys, client bool) (net.PacketConn, 
 	c := &packetConn{
 		PacketConn: pc,
 		cipher:     keys.Cipher,
+		grade:      keys.Grade,
 		txKey:      tx,
 		rxKey:      rx,
 		txBlock:    txBlock,
@@ -565,6 +640,7 @@ func (g *udpNonceGen) next() ([nonceLen]byte, error) {
 type packetConn struct {
 	net.PacketConn
 	cipher  Cipher
+	grade   Grade
 	txKey   [32]byte
 	rxKey   [32]byte
 	txBlock cipher.Block
@@ -652,7 +728,7 @@ func (c *packetConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	}
 	copy(wire, nonce[:])
 	if len(p) > 0 {
-		applyDatagramWithBlock(c.cipher, &c.txKey, c.txBlock, &nonce, wire[nonceLen:], p)
+		applyDatagramWithBlock(c.cipher, c.grade, false, &c.txKey, c.txBlock, &nonce, wire[nonceLen:], p)
 	}
 	n, err := c.PacketConn.WriteTo(wire, addr)
 	if n < nonceLen {
@@ -724,7 +800,7 @@ func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		if err != nil {
 			return 0, addr, err
 		}
-		n, ok := unmaskDatagram(p, buf[:n], c.cipher, &c.rxKey, c.rxBlock, c.server)
+		n, ok := unmaskDatagram(p, buf[:n], c.cipher, c.grade, &c.rxKey, c.rxBlock, c.server)
 		if !ok {
 			continue
 		}
@@ -736,14 +812,14 @@ func (c *packetConn) ReadFrom(p []byte) (int, net.Addr, error) {
 // the datagram, or when it carried no payload. n is the plaintext length.
 // The decrypted bytes temporarily overwrite the ciphertext in wire, which the
 // caller does not reuse.
-func unmaskDatagram(p, wire []byte, c Cipher, key *[32]byte, block cipher.Block, server bool) (int, bool) {
+func unmaskDatagram(p, wire []byte, c Cipher, g Grade, key *[32]byte, block cipher.Block, server bool) (int, bool) {
 	if len(wire) <= nonceLen {
 		return 0, false
 	}
 	var nonce [nonceLen]byte
 	copy(nonce[:], wire[:nonceLen])
 	payload := wire[nonceLen:]
-	applyDatagramWithBlock(c, key, block, &nonce, payload, payload)
+	applyDatagramWithBlock(c, g, true, key, block, &nonce, payload, payload)
 	if server && !supportedQUICPacket(payload) {
 		return 0, false
 	}

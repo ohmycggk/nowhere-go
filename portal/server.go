@@ -32,6 +32,7 @@ type Config struct {
 	SharedKey    string
 	Morph        bool
 	MorphCipher  morph.Cipher
+	MorphGrade   morph.Grade
 	TLS          *tls.Config
 	Upstream     Upstream
 	Egress       bool
@@ -67,6 +68,9 @@ func New(cfg Config) (*Server, error) {
 	if !cfg.MorphCipher.Valid() {
 		return nil, errors.New("cipher must be chacha or aes")
 	}
+	if !cfg.MorphGrade.Valid() {
+		return nil, errors.New("grade must be full or core")
+	}
 	if cfg.TLS == nil {
 		return nil, errors.New("nw3: missing portal TLS config")
 	}
@@ -99,7 +103,7 @@ func New(cfg Config) (*Server, error) {
 		overhead: cfg.DatagramOverhead,
 	}
 	if cfg.Morph {
-		keys, err := morph.DeriveWithCipher([]byte(cfg.SharedKey), cfg.MorphCipher)
+		keys, err := morph.DeriveWithOptions([]byte(cfg.SharedKey), cfg.MorphCipher, cfg.MorphGrade)
 		if err != nil {
 			return nil, err
 		}

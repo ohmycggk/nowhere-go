@@ -75,6 +75,7 @@ func runFingerprint(raw string) error {
 	var morphEnabled bool
 	var sni string
 	var cipher nw3morph.Cipher
+	var grade nw3morph.Grade
 	if edition == "nw2" {
 		query := u.Query()
 		morphEnabled = query.Get("morph") == "1"
@@ -83,12 +84,36 @@ func runFingerprint(raw string) error {
 			sni = ""
 		}
 	} else {
-		q, err := parseNW3Query(u.RawQuery, "net", "morph", "cipher", "sni")
+		if _, hasPass := u.User.Password(); hasPass {
+			return fmt.Errorf("password credentials are not supported; put the shared key before '@'")
+		}
+		if err := nw3wire.ValidateServiceKey(key); err != nil {
+			return err
+		}
+		q, err := parseNW3Query(u.RawQuery, "net", "morph", "grade", "cipher", "sni")
 		if err != nil {
 			return err
 		}
+		rawMorph, hasMorph := q["morph"]
+		if !hasMorph {
+			return fmt.Errorf("fingerprint requires morph=0 or morph=1")
+		}
 		if v, ok := q["net"]; ok && v != "tcp" && v != "udp" {
 			return fmt.Errorf("share link net must be tcp or udp")
+		}
+		switch rawMorph {
+		case "0":
+			morphEnabled = false
+		case "1":
+			morphEnabled = true
+		default:
+			return fmt.Errorf("morph must be 0 or 1")
+		}
+		if v, ok := q["grade"]; ok {
+			grade, err = nw3morph.ParseGrade(v)
+			if err != nil {
+				return err
+			}
 		}
 		if v, ok := q["cipher"]; ok {
 			cipher, err = nw3morph.ParseCipher(v)
@@ -96,15 +121,9 @@ func runFingerprint(raw string) error {
 				return err
 			}
 		}
-		morphEnabled = true
-		if v, ok := q["morph"]; ok {
-			switch v {
-			case "0":
-				morphEnabled = false
-			case "1":
-				morphEnabled = true
-			default:
-				return fmt.Errorf("morph must be 0 or 1")
+		if morphEnabled {
+			if err := nw3morph.ValidateTCPPreludeEnv(); err != nil {
+				return err
 			}
 		}
 		if v, ok := q["sni"]; ok && v != "none" {
@@ -112,7 +131,7 @@ func runFingerprint(raw string) error {
 		}
 	}
 
-	fp, err := fetchCertificateFingerprint(endpoint.tcpAddr(), key, endpoint.host, sni, morphEnabled, edition != "nw2", cipher)
+	fp, err := fetchCertificateFingerprint(endpoint.tcpAddr(), key, endpoint.host, sni, morphEnabled, edition != "nw2", cipher, grade)
 	if err != nil {
 		return err
 	}
@@ -120,7 +139,7 @@ func runFingerprint(raw string) error {
 	return nil
 }
 
-func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 bool, cipher nw3morph.Cipher) (string, error) {
+func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 bool, cipher nw3morph.Cipher, grade nw3morph.Grade) (string, error) {
 	timeout := 15 * time.Second
 	if nw3 {
 		rt, err := runtime.Load(key, false)
@@ -128,6 +147,11 @@ func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 
 			return "", err
 		}
 		timeout = rt.HandshakeTimeout
+		if morphEnabled {
+			if err := nw3morph.ValidateTCPPreludeEnv(); err != nil {
+				return "", err
+			}
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -141,7 +165,7 @@ func fetchCertificateFingerprint(addr, key, host, sni string, morphEnabled, nw3 
 	var carrier net.Conn = conn
 	if morphEnabled {
 		if nw3 {
-			keys, kerr := nw3morph.DeriveWithCipher([]byte(key), cipher)
+			keys, kerr := nw3morph.DeriveWithOptions([]byte(key), cipher, grade)
 			if kerr != nil {
 				return "", fmt.Errorf("failed to retrieve Portal TLS certificate: %w", kerr)
 			}

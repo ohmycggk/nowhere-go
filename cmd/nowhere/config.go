@@ -44,6 +44,7 @@ type nw3Config struct {
 	sni       string
 	pin       string
 	morph     bool
+	grade     morph.Grade
 	cipher    morph.Cipher
 	log       logLevel
 	dial      dialPolicy
@@ -69,7 +70,7 @@ func urlEdition(raw string) (string, error) {
 		return "", fmt.Errorf("unsupported URL scheme")
 	}
 	nw2 := hasLiteralQuery(u.RawQuery, "up", "down", "mux", "next", "socks")
-	nw3 := hasLiteralQuery(u.RawQuery, "in", "out", "rate", "etar", "cipher")
+	nw3 := hasLiteralQuery(u.RawQuery, "in", "out", "rate", "etar", "grade", "cipher")
 	if nw2 && nw3 {
 		return "", fmt.Errorf("nw2 and nw3 options cannot be combined")
 	}
@@ -94,7 +95,7 @@ func hasLiteralQuery(rawQuery string, names ...string) bool {
 	return false
 }
 
-// parseNW3Query mirrors Nowhere 3.4's query_first: query keys are matched
+// parseNW3Query mirrors Nowhere 3.5's query_first: query keys are matched
 // literally without percent-decoding, the first occurrence of a recognized key
 // wins (later duplicates are ignored even if malformed), and recognized values
 // are strictly percent-decoded as UTF-8.
@@ -216,11 +217,11 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 	var allowed []string
 	switch cfg.kind {
 	case nw3Portal:
-		allowed = []string{"tls", "crt", "key", "rate", "etar", "dial", "dial4", "dial6", "morph", "cipher", "out", "log"}
+		allowed = []string{"tls", "crt", "key", "rate", "etar", "dial", "dial4", "dial6", "morph", "grade", "cipher", "out", "log"}
 	case nw3Vector:
-		allowed = []string{"in", "sni", "pin", "rate", "etar", "morph", "cipher", "log", "crt", "key"}
+		allowed = []string{"in", "sni", "pin", "rate", "etar", "morph", "grade", "cipher", "log", "crt", "key"}
 	case nw3Egress:
-		allowed = []string{"sni", "pin", "morph", "cipher", "dial", "dial4", "dial6", "rate", "etar", "log", "crt", "key"}
+		allowed = []string{"sni", "pin", "morph", "grade", "cipher", "dial", "dial4", "dial6", "rate", "etar", "log", "crt", "key"}
 	}
 	q, err := parseNW3Query(u.RawQuery, allowed...)
 	if err != nil {
@@ -246,13 +247,6 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 	if cfg.tlsMode == 2 && (cfg.certPath == "" || cfg.keyPath == "") {
 		return nw3Config{}, fmt.Errorf("tls=2 requires crt and key")
 	}
-	if v, ok := first("cipher"); ok {
-		cipher, err := morph.ParseCipher(v)
-		if err != nil {
-			return nw3Config{}, err
-		}
-		cfg.cipher = cipher
-	}
 	if v, ok := first("morph"); ok {
 		switch v {
 		case "0":
@@ -262,6 +256,20 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 		default:
 			return nw3Config{}, fmt.Errorf("morph must be 0 or 1")
 		}
+	}
+	if v, ok := first("grade"); ok {
+		grade, err := morph.ParseGrade(v)
+		if err != nil {
+			return nw3Config{}, err
+		}
+		cfg.grade = grade
+	}
+	if v, ok := first("cipher"); ok {
+		cipher, err := morph.ParseCipher(v)
+		if err != nil {
+			return nw3Config{}, err
+		}
+		cfg.cipher = cipher
 	}
 	if v, ok := first("log"); ok {
 		level, err := parseLogLevel(v)
@@ -301,7 +309,7 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 			return nw3Config{}, err
 		}
 	}
-	if v, ok := first("in"); ok && v != "" {
+	if _, ok := first("in"); ok {
 		rawIn, _ := firstRawNW3QueryValue(u.RawQuery, "in")
 		user, pass, addr, err := parseSocksEndpoint(rawIn)
 		if err != nil {
@@ -309,17 +317,22 @@ func parseNW3(raw string, vectorRequiresIn bool) (nw3Config, error) {
 		}
 		cfg.inUser, cfg.inPass, cfg.inAddr = user, pass, addr
 	}
-	if v, ok := first("out"); ok && v != "" && v != "direct" {
-		if v == "egress" {
-			cfg.exit = nw3ExitEgress
-		} else {
-			rawOut, _ := firstRawNW3QueryValue(u.RawQuery, "out")
-			user, pass, addr, err := parseSocksEndpoint(rawOut)
-			if err != nil {
-				return nw3Config{}, fmt.Errorf("out: %w", err)
+	if v, ok := first("out"); ok {
+		if v == "" {
+			return nw3Config{}, fmt.Errorf("empty out parameter")
+		}
+		if v != "direct" {
+			if v == "egress" {
+				cfg.exit = nw3ExitEgress
+			} else {
+				rawOut, _ := firstRawNW3QueryValue(u.RawQuery, "out")
+				user, pass, addr, err := parseSocksEndpoint(rawOut)
+				if err != nil {
+					return nw3Config{}, fmt.Errorf("out: %w", err)
+				}
+				cfg.exit = nw3ExitSocks
+				cfg.socks, cfg.socksUser, cfg.socksPass = addr, user, pass
 			}
-			cfg.exit = nw3ExitSocks
-			cfg.socks, cfg.socksUser, cfg.socksPass = addr, user, pass
 		}
 	}
 	if cfg.kind == nw3Portal && cfg.exit == nw3ExitEgress && cfg.dial.configured() {
